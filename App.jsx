@@ -3546,10 +3546,92 @@ function App() {
     const netWorth = wallet + stockValue + propValue;
     const loansOut = loans.reduce((s, l) => s + l.amount, 0);
     const valuationUnlocked = totalDrivingIncome >= VALUATION_UNLOCK;
-    // Tick asset prices every 5 seconds
+    // ── SYNCED ASSET PRICES VIA FIREBASE (15 second intervals) ──────────────────
+    // One player acts as market maker and pushes prices to Firebase
+    // All other players read from Firebase — everyone sees the same prices
+    const PRICE_SYNC_MS = 15000; // 15 seconds — safe for Firebase free tier
+
     useEffect(() => {
-        const id = setInterval(() => { setAssetPrices(prev => tickAssetPrices(prev)); }, 5000);
-        return () => clearInterval(id);
+        const db = getDB();
+        if (!db) {
+            // No Firebase — fall back to local ticking
+            const id = setInterval(() => setAssetPrices(prev => tickAssetPrices(prev)), PRICE_SYNC_MS);
+            return () => clearInterval(id);
+        }
+
+        const priceRef = db.ref("market/assetPrices");
+        const masterRef = db.ref("market/masterClient");
+        const myClientId = "client_" + Date.now() + "_" + Math.random().toString(36).slice(2,7);
+        let isMaster = false;
+        let masterInterval = null;
+        let readInterval = null;
+
+        // Try to become master market maker
+        async function tryBecomeMaster() {
+            try {
+                const snap = await masterRef.once("value");
+                const master = snap.val();
+                const now = Date.now();
+                // Become master if no master exists or master is stale (>30s old)
+                if (!master || !master.lastSeen || (now - master.lastSeen) > 30000) {
+                    await masterRef.set({ clientId: myClientId, lastSeen: now });
+                    const verify = await masterRef.once("value");
+                    if (verify.val()?.clientId === myClientId) {
+                        isMaster = true;
+                        console.log("Market Legends: Acting as market maker");
+                    }
+                }
+            } catch(e) {}
+        }
+
+        // Master: tick prices and push to Firebase
+        async function masterTick() {
+            if (!isMaster) return;
+            try {
+                const snap = await priceRef.once("value");
+                const current = snap.val() || initAssetPrices();
+                const next = tickAssetPrices(current);
+                await priceRef.set({ ...next, updatedAt: Date.now() });
+                await masterRef.update({ lastSeen: Date.now() });
+                setAssetPrices(next);
+            } catch(e) { isMaster = false; }
+        }
+
+        // All clients: subscribe to Firebase prices
+        const onPrice = priceRef.on("value", snap => {
+            const v = snap.val();
+            if (v) {
+                const { updatedAt, ...prices } = v;
+                if (Object.keys(prices).length > 0) {
+                    setAssetPrices(prev => ({ ...prev, ...prices }));
+                }
+            }
+        });
+
+        // Start master election and ticking
+        tryBecomeMaster().then(() => {
+            masterInterval = setInterval(async () => {
+                // Re-check master status every interval
+                if (!isMaster) {
+                    await tryBecomeMaster();
+                }
+                if (isMaster) await masterTick();
+            }, PRICE_SYNC_MS);
+        });
+
+        return () => {
+            priceRef.off("value", onPrice);
+            clearInterval(masterInterval);
+            clearInterval(readInterval);
+            // Release master if we hold it
+            if (isMaster) {
+                masterRef.once("value").then(snap => {
+                    if (snap.val()?.clientId === myClientId) {
+                        masterRef.remove().catch(() => {});
+                    }
+                }).catch(() => {});
+            }
+        };
     }, []);
 
     // Check for overdue loans on login and every 5 minutes
