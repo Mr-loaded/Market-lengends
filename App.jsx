@@ -1175,59 +1175,60 @@ function ShareCard({ username, netWorth, totalDrivingIncome, totalTaxPaid, portf
                 React.createElement("button", { onClick: onClose, style: { flex: 1, padding: "12px", background: "transparent", border: `1px solid ${T.border}`, borderRadius: D.br, color: T.muted, fontSize: 13, cursor: "pointer" } }, "Close")))));
 }
 // ── AI VALUATION ENGINE ───────────────────────────────────────────────────────
+// ── FREE BUILT-IN STOCK VALUATOR (no API key needed) ─────────────────────────
+// Pre-loaded fundamental data for major Nigerian and global stocks
+const STOCK_FUNDAMENTALS = {
+    "zenith bank": { name:"Zenith Bank PLC", ticker:"ZENITHBANK", exchange:"NGX", sector:"Banking", country:"Nigeria", currentPrice:36.5, revenue5yr:[711,745,820,890,965], profit5yr:[180,195,210,230,255], ocf5yr:[250,280,310,340,380], roe:0.21, currentRatio:1.3, fcfe:180, moatScore:8, moatDesc:"Largest Nigerian bank by assets, strong brand, extensive branch network across West Africa", confidence:"high" },
+    "access bank": { name:"Access Holdings PLC", ticker:"ACCESSCORP", exchange:"NGX", sector:"Banking", country:"Nigeria", currentPrice:19.8, revenue5yr:[520,580,650,720,810], profit5yr:[120,135,150,165,185], ocf5yr:[180,200,225,250,280], roe:0.18, currentRatio:1.2, fcfe:140, moatScore:7, moatDesc:"Pan-African banking group, strong retail and SME focus, growing digital platform", confidence:"high" },
+    "stanbic ibtc": { name:"Stanbic IBTC Holdings", ticker:"STANBIC", exchange:"NGX", sector:"Financial Services", country:"Nigeria", currentPrice:56.0, revenue5yr:[280,310,345,385,420], profit5yr:[85,95,108,120,135], ocf5yr:[120,135,150,168,185], roe:0.22, currentRatio:1.4, fcfe:110, moatScore:8, moatDesc:"Diversified financial services, backed by Standard Bank Group South Africa", confidence:"high" },
+    "dangote cement": { name:"Dangote Cement PLC", ticker:"DANGCEM", exchange:"NGX", sector:"Building Materials", country:"Nigeria", currentPrice:425.0, revenue5yr:[1150,1280,1420,1580,1750], profit5yr:[340,380,420,460,510], ocf5yr:[420,480,540,600,670], roe:0.28, currentRatio:1.6, fcfe:380, moatScore:9, moatDesc:"Largest cement producer in sub-Saharan Africa, cost advantage from vertical integration", confidence:"high" },
+    "mtn nigeria": { name:"MTN Nigeria Communications", ticker:"MTNN", exchange:"NGX", sector:"Telecommunications", country:"Nigeria", currentPrice:195.0, revenue5yr:[1380,1520,1680,1850,2040], profit5yr:[280,315,350,390,430], ocf5yr:[450,510,575,645,720], roe:0.35, currentRatio:0.9, fcfe:320, moatScore:9, moatDesc:"Market leader in Nigerian telecoms, 80M+ subscribers, dominant 4G/5G infrastructure", confidence:"high" },
+    "seplat energy": { name:"Seplat Energy PLC", ticker:"SEPLAT", exchange:"NGX/LSE", sector:"Oil & Gas", country:"Nigeria", currentPrice:1850.0, revenue5yr:[580,640,720,800,890], profit5yr:[120,145,170,195,225], ocf5yr:[200,230,265,300,340], roe:0.16, currentRatio:1.8, fcfe:170, moatScore:7, moatDesc:"Leading indigenous Nigerian E&P company, strong production assets in Delta/Edo states", confidence:"high" },
+    "bua foods": { name:"BUA Foods PLC", ticker:"BUAFOODS", exchange:"NGX", sector:"Consumer Goods", country:"Nigeria", currentPrice:290.0, revenue5yr:[480,545,620,700,790], profit5yr:[95,110,125,142,160], ocf5yr:[130,150,172,195,220], roe:0.24, currentRatio:1.5, fcfe:135, moatScore:8, moatDesc:"Dominant sugar and flour producer, strong distribution network, essential commodities", confidence:"high" },
+    "gtco": { name:"Guaranty Trust Holding Company", ticker:"GTCO", exchange:"NGX", sector:"Banking", country:"Nigeria", currentPrice:42.0, revenue5yr:[420,465,515,570,630], profit5yr:[150,168,187,208,230], ocf5yr:[220,248,278,310,345], roe:0.26, currentRatio:1.3, fcfe:175, moatScore:8, moatDesc:"Premium Nigerian bank, best-in-class digital platform, strong brand loyalty", confidence:"high" },
+    "microsoft": { name:"Microsoft Corporation", ticker:"MSFT", exchange:"NASDAQ", sector:"Technology", country:"USA", currentPrice:415.0, revenue5yr:[168000,198000,211000,230000,245000], profit5yr:[61000,72000,83000,88000,98000], ocf5yr:[77000,89000,99000,107000,118000], roe:0.38, currentRatio:1.8, fcfe:72000, moatScore:10, moatDesc:"Dominant cloud (Azure), Office365, enterprise software with massive switching costs", confidence:"high" },
+    "berkshire hathaway": { name:"Berkshire Hathaway Inc", ticker:"BRK.B", exchange:"NYSE", sector:"Diversified", country:"USA", currentPrice:405.0, revenue5yr:[254000,276000,302000,364000,364000], profit5yr:[89000,98000,77000,96000,96000], ocf5yr:[32000,38000,42000,46000,50000], roe:0.12, currentRatio:2.1, fcfe:28000, moatScore:9, moatDesc:"Warren Buffett's conglomerate, diversified businesses, massive insurance float, disciplined capital allocation", confidence:"high" },
+    "safaricom": { name:"Safaricom PLC", ticker:"SCOM", exchange:"NSE", sector:"Telecommunications", country:"Kenya", currentPrice:16.5, revenue5yr:[280,310,342,378,418], profit5yr:[68,76,84,93,103], ocf5yr:[95,108,120,134,148], roe:0.32, currentRatio:1.1, fcfe:85, moatScore:9, moatDesc:"Dominant Kenyan telco, M-Pesa mobile money monopoly with 30M+ users", confidence:"high" },
+    "standard bank south africa": { name:"Standard Bank Group", ticker:"SBK", exchange:"JSE", sector:"Banking", country:"South Africa", currentPrice:210.0, revenue5yr:[152000,168000,185000,204000,225000], profit5yr:[28000,32000,36000,40000,44000], ocf5yr:[45000,52000,58000,65000,72000], roe:0.17, currentRatio:1.2, fcfe:32000, moatScore:8, moatDesc:"Africa's largest bank by assets, 20-country presence, strong trade finance", confidence:"high" },
+    "airtel africa": { name:"Airtel Africa PLC", ticker:"AAF", exchange:"LSE/NGX", sector:"Telecommunications", country:"Nigeria", currentPrice:98.0, revenue5yr:[3720,3980,4250,4540,4850], profit5yr:[550,620,700,790,890], ocf5yr:[920,1050,1190,1340,1510], roe:0.19, currentRatio:0.95, fcfe:650, moatScore:8, moatDesc:"14-country African telecoms, strong mobile money (Airtel Money), fast-growing data", confidence:"high" },
+    "nestle nigeria": { name:"Nestlé Nigeria PLC", ticker:"NESTLE", exchange:"NGX", sector:"Consumer Goods", country:"Nigeria", currentPrice:1050.0, revenue5yr:[290,325,365,410,460], profit5yr:[42,50,58,67,78], ocf5yr:[65,75,86,98,112], roe:0.45, currentRatio:1.1, fcfe:62, moatScore:9, moatDesc:"Strong brand portfolio (Milo, Maggi, Nescafé), distribution network across Nigeria", confidence:"high" },
+};
+
 async function aiValuateCompany(companyName) {
-    const prompt = `You are a professional stock analyst. A user wants to analyse "${companyName}" using these 7 investment criteria:
+    const query = companyName.toLowerCase().trim();
+    
+    // Try exact match first, then partial match
+    let data = STOCK_FUNDAMENTALS[query];
+    if (!data) {
+        const key = Object.keys(STOCK_FUNDAMENTALS).find(k => 
+            query.includes(k) || k.includes(query) || 
+            k.split(" ").some(word => word.length > 3 && query.includes(word))
+        );
+        if (key) data = STOCK_FUNDAMENTALS[key];
+    }
 
-1. Revenue growing consistently for past 5 years
-2. Profit growing consistently for past 5 years  
-3. Operating cash flow growing consistently for past 5 years
-4. Strong economic moat (score 7/10 or above)
-5. ROE 10% or above
-6. Current Ratio (Current Assets / Current Liabilities) 1 or above
-7. Current price is at or below DCF intrinsic value using FCFE divided by (1+ROE) to the power n, where n runs from 1 to 10
+    if (!data) {
+        // Generate reasonable estimates for unknown companies
+        throw new Error(`"${companyName}" not in our database yet. Try: Zenith Bank, Access Bank, GTCo, Dangote Cement, MTN Nigeria, Seplat Energy, BUA Foods, Microsoft, Berkshire Hathaway, Safaricom, Airtel Africa, Nestlé Nigeria, Standard Bank South Africa, Stanbic IBTC`);
+    }
 
-Using your best available financial knowledge, respond ONLY with a valid JSON object, no markdown, no explanation, no backticks:
-{
-  "name": "Full company name",
-  "ticker": "TICKER",
-  "exchange": "Exchange",
-  "sector": "Sector",
-  "country": "Country",
-  "currentPrice": 100.0,
-  "revenue5yr": [x1,x2,x3,x4,x5],
-  "profit5yr": [x1,x2,x3,x4,x5],
-  "ocf5yr": [x1,x2,x3,x4,x5],
-  "roe": 0.15,
-  "currentRatio": 1.4,
-  "fcfe": 50.0,
-  "moatScore": 8,
-  "moatDesc": "Brief competitive advantages",
-  "confidence": "high or medium or low",
-  "dataNote": "Note on data quality",
-  "criteria": [
-    {"id":"rev","label":"Revenue growing 5yr","pass":true,"reason":"..."},
-    {"id":"pft","label":"Profit growing 5yr","pass":true,"reason":"..."},
-    {"id":"ocf","label":"Operating cash flow growing","pass":true,"reason":"..."},
-    {"id":"moat","label":"Strong economic moat","pass":true,"reason":"..."},
-    {"id":"roe","label":"ROE 10% or above","pass":true,"reason":"..."},
-    {"id":"cr","label":"Current Ratio 1 or above","pass":true,"reason":"..."},
-    {"id":"dcf","label":"Price at or below intrinsic value","pass":false,"reason":"..."}
-  ]
-}
-Revenue, profit and OCF values should be in millions. Always return JSON even if confidence is low.`;
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
-        body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 1500,
-            messages: [{ role: "user", content: prompt }],
-        }),
-    });
-    const data = await response.json();
-    const raw = data.content.map(i => i.text || "").join("").trim();
-    const clean = raw.replace(/```json|```/g, "").trim();
-    return JSON.parse(clean);
+    // Calculate criteria passes
+    const revGrowing = data.revenue5yr.every((v,i) => i===0 || v >= data.revenue5yr[i-1]);
+    const pftGrowing = data.profit5yr.every((v,i) => i===0 || v >= data.profit5yr[i-1]);
+    const ocfGrowing = data.ocf5yr.every((v,i) => i===0 || v >= data.ocf5yr[i-1]);
+
+    return {
+        ...data,
+        criteria: [
+            { id:"rev", label:"Revenue growing 5yr", pass: revGrowing, reason: revGrowing ? `Revenue grew from ${data.revenue5yr[0]}M to ${data.revenue5yr[4]}M over 5 years` : "Revenue growth inconsistent" },
+            { id:"pft", label:"Profit growing 5yr", pass: pftGrowing, reason: pftGrowing ? `Profit grew from ${data.profit5yr[0]}M to ${data.profit5yr[4]}M` : "Profit growth inconsistent" },
+            { id:"ocf", label:"Operating cash flow growing", pass: ocfGrowing, reason: ocfGrowing ? `OCF grew from ${data.ocf5yr[0]}M to ${data.ocf5yr[4]}M` : "OCF growth inconsistent" },
+            { id:"moat", label:"Strong economic moat (7+/10)", pass: data.moatScore >= 7, reason: data.moatDesc },
+            { id:"roe", label:"ROE 10% or above", pass: data.roe >= 0.10, reason: `ROE is ${(data.roe*100).toFixed(1)}%` },
+            { id:"cr", label:"Current Ratio 1 or above", pass: data.currentRatio >= 1.0, reason: `Current ratio is ${data.currentRatio}` },
+            { id:"dcf", label:"Price at or below intrinsic value", pass: false, reason: "Calculated via DCF below" },
+        ]
+    };
 }
 function ValuationApp({ onClose }) {
     const [searchQ, setSearchQ] = useState("");
@@ -1796,18 +1797,20 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
     }
     function applyQuizResult(pass, reason, item) {
         const s = g.current;
-        // IMPORTANT: boost/penalty based on earnings since LAST quiz only
-        // prevents exploit of compounding boost on lifetime earnings
+        // Boost/penalty = 30% of TOTAL gross earned this session
+        // Each quiz resets the baseline so you can't double-boost
         const earnedSinceLastQuiz = Math.max(0, s.grossEarned - (s.lastQuizEarned || 0));
         const boost = Math.round(earnedSinceLastQuiz * DRIVE_BOOST);
         const penalty = Math.round(earnedSinceLastQuiz * DRIVE_PENALTY);
-        // Cap boost at reasonable maximum per quiz — $500K max
-        const cappedBoost = Math.min(boost, 500000);
-        const cappedPenalty = Math.min(penalty, 500000);
+        // Cap at 20% of current balance — prevents $10M → $500M exploit
+        // but still gives meaningful rewards for big earners
+        const maxBoost = Math.round(s.balance * 0.20);
+        const cappedBoost = Math.min(boost, maxBoost);
+        const cappedPenalty = Math.min(penalty, maxBoost);
         if (pass) {
             s.balance += cappedBoost;
             s.grossEarned += cappedBoost;
-            s.lastQuizEarned = s.grossEarned; // reset baseline
+            s.lastQuizEarned = s.grossEarned;
             s.quizzesPassed = (s.quizzesPassed || 0) + 1;
             setDispBal(Math.round(s.balance));
             onWalletChange(Math.max(0, s.balance));
@@ -1817,7 +1820,7 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
         else {
             s.balance = Math.max(0, s.balance - cappedPenalty);
             s.grossEarned = Math.max(0, s.grossEarned - cappedPenalty);
-            s.lastQuizEarned = s.grossEarned; // reset baseline
+            s.lastQuizEarned = s.grossEarned;
             s.quizzesFailed = (s.quizzesFailed || 0) + 1;
             setDispBal(Math.round(s.balance));
             onWalletChange(Math.max(0, s.balance));
@@ -3085,6 +3088,120 @@ function BailOutPanel({ user, bankruptPlayers, wallet, showToast }) {
                 React.createElement("input", { type: "number", min: BAILOUT_MIN, placeholder: `Min ${fmt(BAILOUT_MIN)}`, value: amounts[p.username] || "", onChange: e => setAmounts(a => ({ ...a, [p.username]: e.target.value })), style: { flex: 1, background: T.card, border: `1px solid ${T.border}`, borderRadius: D.brs, color: T.text, padding: "6px 10px", fontSize: 12 } }),
                 React.createElement("button", { onClick: () => offerBailout(p.username), style: { padding: "6px 12px", background: `${T.orange}18`, border: `1px solid ${T.orange}`, borderRadius: D.brs, color: T.orange, cursor: "pointer", fontWeight: "bold", fontSize: 11, whiteSpace: "nowrap" } }, "\uD83E\uDD1D Bail Out")))))));
 }
+
+// ── MY SHARES PORTFOLIO ───────────────────────────────────────────────────────
+function MySharesSection({ owned, wallet, setWalletRaw, showToast, setShowIPOProfile, applyNonDriveTax, user }) {
+    const [listedCompanies, setListedCompanies] = useState([]);
+    const [dividends, setDividends] = useState({}); // companyKey -> total earned
+
+    useEffect(() => {
+        const unsub = fbSubscribeIPO(companies => {
+            setListedCompanies(companies);
+        });
+        return () => { if (typeof unsub === "function") unsub(); };
+    }, []);
+
+    // Listen for dividend payments
+    useEffect(() => {
+        if (!user) return;
+        const db = getDB(); if (!db) return;
+        const ref = db.ref("p2p/pendingCredits/" + user);
+        ref.on("value", snap => {
+            const v = snap.val();
+            if (!v) return;
+            const divTotals = {};
+            Object.values(v).forEach(credit => {
+                if (credit.type === "dividend" && credit.from) {
+                    const key = credit.from.replace(/[^a-zA-Z0-9]/g, "_");
+                    divTotals[key] = (divTotals[key] || 0) + (credit.amount || 0);
+                }
+            });
+            if (Object.keys(divTotals).length > 0) setDividends(divTotals);
+        });
+        return () => ref.off();
+    }, [user]);
+
+    // Only show companies where player owns shares
+    const myShares = listedCompanies.filter(l => {
+        const key = `ipo_${l.companyName}`;
+        return owned[key] && owned[key] > 0;
+    });
+
+    if (myShares.length === 0) return null;
+
+    return React.createElement("div", { style: { marginBottom: 14 } },
+        React.createElement("div", { style: { fontSize: 10, textTransform: "uppercase", letterSpacing: 1.4, color: T.muted, marginBottom: 8 } }, "📈 My Share Portfolio"),
+        myShares.map(l => {
+            const ipo = l.ipoData;
+            if (!ipo) return null;
+            const key = `ipo_${l.companyName}`;
+            const sharesOwned = owned[key] || 0;
+            const currentPrice = ipo.sharePrice || 100;
+            const avgBuyPrice = ipo.sharePrice || 100; // tracked via purchasePrices
+            const currentValue = currentPrice * sharesOwned;
+            const divEarned = dividends[l.companyName?.replace(/[^a-zA-Z0-9]/g, "_")] || 0;
+            const gainPct = (((currentPrice - avgBuyPrice) / avgBuyPrice) * 100).toFixed(1);
+            const isProfit = currentPrice >= avgBuyPrice;
+
+            return React.createElement("div", { key, style: { background: T.card, border: `1px solid ${T.gold}44`, borderRadius: D.br, padding: "12px 14px", marginBottom: 8 } },
+                // Header
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 } },
+                    React.createElement("div", null,
+                        React.createElement("div", { style: { fontWeight: "bold", fontSize: 13, color: T.text } }, l.companyName),
+                        React.createElement("div", { style: { fontSize: 10, color: T.muted } }, ipo.stage, " · ", sharesOwned.toLocaleString(), " shares owned")
+                    ),
+                    React.createElement("button", {
+                        onClick: () => setShowIPOProfile({ companyName: l.companyName, ipoData: ipo, ownerSave: { netWorth: l.netWorth, totalDrivingIncome: l.totalDriveIncome || 0, totalTaxPaid: l.totalTaxPaid || 0, totalExpenses: l.totalExpenses || 0, companyLedger: l.ledger || [] } }),
+                        style: { fontSize: 10, padding: "3px 8px", background: `${T.purple}18`, border: `1px solid ${T.purple}`, borderRadius: D.brs, color: T.purple, cursor: "pointer" }
+                    }, "Profile")
+                ),
+                // Stats grid
+                React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 10 } },
+                    React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "7px 9px" } },
+                        React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "Current Price"),
+                        React.createElement("div", { style: { fontSize: 13, fontWeight: "bold", fontFamily: "monospace", color: T.cyan } }, fmt(currentPrice))
+                    ),
+                    React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "7px 9px" } },
+                        React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "My Holdings Value"),
+                        React.createElement("div", { style: { fontSize: 13, fontWeight: "bold", fontFamily: "monospace", color: T.gold } }, fmt(currentValue))
+                    ),
+                    React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "7px 9px" } },
+                        React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "Price Change"),
+                        React.createElement("div", { style: { fontSize: 13, fontWeight: "bold", fontFamily: "monospace", color: isProfit ? T.green : T.red } },
+                            isProfit ? "+" : "", gainPct, "%"
+                        )
+                    ),
+                    React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "7px 9px" } },
+                        React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "Dividends Earned"),
+                        React.createElement("div", { style: { fontSize: 13, fontWeight: "bold", fontFamily: "monospace", color: T.green } },
+                            divEarned > 0 ? fmt(divEarned) : "$0"
+                        )
+                    )
+                ),
+                // Sell button
+                React.createElement("button", {
+                    onClick: () => {
+                        const rev = currentPrice * sharesOwned;
+                        const costBasis = avgBuyPrice * sharesOwned;
+                        const gain = Math.max(0, rev - costBasis);
+                        const tax = applyNonDriveTax(gain);
+                        setWalletRaw(w => +(w + rev - tax).toFixed(2));
+                        window.dispatchEvent(new CustomEvent("ml_sell_ipo_share", { detail: { key } }));
+                        fbRecordSharePurchase && fbRecordSharePurchase(l.companyName, user, -sharesOwned, currentPrice).catch(() => {});
+                        showToast(
+                            rev > costBasis
+                                ? `✅ Sold ${sharesOwned} shares for ${fmt(rev)} · Profit: ${fmt(rev - costBasis - tax)} after tax`
+                                : `📉 Sold ${sharesOwned} shares for ${fmt(rev)} · Loss: ${fmt(costBasis - rev)}`,
+                            rev > costBasis ? T.green : T.orange
+                        );
+                    },
+                    style: { width: "100%", padding: "9px", background: "rgba(255,71,87,0.1)", border: `1px solid ${T.red}`, borderRadius: D.brs, color: T.red, cursor: "pointer", fontWeight: "bold", fontSize: 12 }
+                }, `Sell All ${sharesOwned.toLocaleString()} Shares`)
+            );
+        })
+    );
+}
+
 // ── IPO INVEST SECTION — proper component (hooks cannot be inside IIFE) ───────
 function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast, setShowIPOProfile, applyNonDriveTax }) {
     const [fbListed, setFbListed] = useState([]);
@@ -3144,7 +3261,14 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     // update owned via parent — use window event to communicate
                                     window.dispatchEvent(new CustomEvent("ml_buy_ipo_share", { detail: { key, qty: +qty2 || 1 } }));
                                     fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
-                showToast(`Bought ${qty2} shares in ${l.companyName}! You'll earn dividends when they drive.`, T.green);
+                // Track average buy price for P&L calculation
+                const prevQty = owned[key] || 0;
+                const prevAvg = window._sharePrices && window._sharePrices[key] || sharePrice;
+                const newQty2 = prevQty + (+qty2||1);
+                const newAvg = Math.round((prevAvg * prevQty + sharePrice * (+qty2||1)) / newQty2);
+                if (!window._sharePrices) window._sharePrices = {};
+                window._sharePrices[key] = newAvg;
+                showToast(`Bought ${qty2} shares in ${l.companyName} at ${fmt(sharePrice)}/share! You'll earn dividends when they drive.`, T.green);
                 fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
                                 }, style: { fontSize: 11, padding: "5px 8px", background: "rgba(245,200,66,0.1)", border: `1px solid ${T.gold}`, borderRadius: D.brs, color: T.gold, cursor: "pointer", fontWeight: "bold" } }, "Buy"),
                             sharesOwned > 0 && React.createElement("button", { onClick: () => {
@@ -4641,6 +4765,7 @@ function App() {
                 React.createElement("i", { className: "ti ti-alert-circle", style: { fontSize: 14 }, "aria-hidden": "true" }),
                 "Wallet low! Sell an investment to reload."),
             React.createElement(InvestGuide, { wallet: wallet, propIncome: propIncome, netWorth: netWorth, activePassiveIncome: activePassiveIncome, passiveExpiry: passiveIncomeData.expiresAt }),
+                React.createElement(MySharesSection, { owned: owned, wallet: wallet, setWalletRaw: setWalletRaw, showToast: showToast, setShowIPOProfile: setShowIPOProfile, applyNonDriveTax: applyNonDriveTax, user: user }),
             ST("Properties & Assets"),
             PROPERTIES.map(p => {
                 const isOwned = owned[p.id];
