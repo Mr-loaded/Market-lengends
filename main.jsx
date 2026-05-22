@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 // Initialize Firebase FIRST before App loads
-import { db } from './src/firebase.js'
+import { db } from './firebase.js'
 // Make firebase available globally for App.jsx compatibility
 import firebase from 'firebase/compat/app'
 window.firebase = firebase
