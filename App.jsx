@@ -2815,6 +2815,72 @@ function ChallengesScreen({ currentUser, netWorth, streak, totalChallengesWon, o
             })))));
 }
 // ── IPO SCREEN ────────────────────────────────────────────────────────────────
+
+// ── SHAREHOLDERS DASHBOARD (visible to company owner in IPO tab) ──────────────
+function ShareholdersDashboard({ companyName, ipoData }) {
+    const [shareholders, setShareholders] = useState([]);
+    const [totalRaised, setTotalRaised] = useState(0);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (!companyName) return;
+        const db = getDB(); if (!db) { setLoading(false); return; }
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const ref = db.ref("ipo/shareholders/" + key);
+        ref.on("value", snap => {
+            const v = snap.val();
+            if (v) {
+                const list = Object.values(v).filter(s => s.shares > 0).sort((a,b) => b.shares - a.shares);
+                setShareholders(list);
+                setTotalRaised(list.reduce((s, sh) => s + (sh.totalInvested||0), 0));
+            } else {
+                setShareholders([]);
+                setTotalRaised(0);
+            }
+            setLoading(false);
+        });
+        return () => ref.off();
+    }, [companyName]);
+
+    if (!ipoData || (ipoData.stage !== "Listed" && ipoData.stage !== "Blue Chip")) return null;
+
+    const sharePrice = ipoData.sharePrice || 0;
+    const totalSharesSold = shareholders.reduce((s, sh) => s + (sh.shares||0), 0);
+
+    return React.createElement("div", { style: { background: T.card, border: `1px solid ${T.gold}44`, borderRadius: D.br, padding: 14, marginBottom: 12 } },
+        React.createElement("div", { style: { fontWeight: "bold", fontSize: 13, color: T.gold, marginBottom: 10 } }, "👥 Your Shareholders"),
+        // Summary stats
+        React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 10 } },
+            React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "8px 10px", textAlign: "center" } },
+                React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "INVESTORS"),
+                React.createElement("div", { style: { fontSize: 16, fontWeight: "bold", color: T.cyan } }, shareholders.length)
+            ),
+            React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "8px 10px", textAlign: "center" } },
+                React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "SHARES SOLD"),
+                React.createElement("div", { style: { fontSize: 16, fontWeight: "bold", color: T.gold } }, totalSharesSold.toLocaleString())
+            ),
+            React.createElement("div", { style: { background: T.surface, borderRadius: D.brs, padding: "8px 10px", textAlign: "center" } },
+                React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, "CAPITAL RAISED"),
+                React.createElement("div", { style: { fontSize: 14, fontWeight: "bold", color: T.green } }, fmt(totalRaised))
+            )
+        ),
+        loading && React.createElement("div", { style: { textAlign: "center", color: T.muted, fontSize: 12, padding: 10 } }, "Loading shareholders..."),
+        !loading && shareholders.length === 0 && React.createElement("div", { style: { textAlign: "center", color: T.muted, fontSize: 12, padding: 10 } }, "No investors yet. Your shares appear in the Invest tab for other players to buy."),
+        shareholders.length > 0 && React.createElement("div", { style: { maxHeight: 200, overflowY: "auto" } },
+            shareholders.map((sh, i) => React.createElement("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${T.border}`, fontSize: 12 } },
+                React.createElement("div", null,
+                    React.createElement("div", { style: { fontWeight: "bold", color: T.text } }, sh.username || "Unknown"),
+                    React.createElement("div", { style: { fontSize: 10, color: T.muted } }, (sh.shares||0).toLocaleString(), " shares · Last bought ", sh.lastBought ? new Date(sh.lastBought).toLocaleDateString() : "")
+                ),
+                React.createElement("div", { style: { textAlign: "right" } },
+                    React.createElement("div", { style: { color: T.gold, fontFamily: "monospace", fontWeight: "bold" } }, fmt(sh.totalInvested||0)),
+                    React.createElement("div", { style: { fontSize: 10, color: T.muted } }, "Current val: ", fmt((sh.shares||0) * sharePrice))
+                )
+            ))
+        )
+    );
+}
+
 function IPOScreen({ netWorth, wallet, companyName, isRegistered, ipoData, valuationUnlocked, onLaunchIPO, onSellShares, onBuyback }) {
     const [offerPct, setOfferPct] = useState("20");
     const [offerPrice, setOfferPrice] = useState("");
@@ -2935,6 +3001,7 @@ function IPOScreen({ netWorth, wallet, companyName, isRegistered, ipoData, valua
                 companyName,
                 " on the Exchange"))),
         isListed && (React.createElement("div", null,
+            React.createElement(ShareholdersDashboard, { companyName: companyName, ipoData: ipoData }),
             React.createElement("div", { style: { background: "rgba(0,255,136,0.05)", border: `1px solid ${T.green}55`, borderRadius: D.br, padding: 14, marginBottom: 12 } },
                 React.createElement("div", { style: { fontWeight: "bold", fontSize: 14, color: T.green, marginBottom: 4 } },
                     "\u2705 ",
@@ -3258,9 +3325,26 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     }
                                     setQty(q => ({ ...q, [key]: 1 }));
                                     setWalletRaw(w => +(w - cost).toFixed(2));
-                                    // update owned via parent — use window event to communicate
+                                    // update owned via parent
                                     window.dispatchEvent(new CustomEvent("ml_buy_ipo_share", { detail: { key, qty: +qty2 || 1 } }));
                                     fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
+                                    // Credit owner wallet via Firebase
+                                    const db3 = getDB();
+                                    if (db3 && l.ownerUsername) {
+                                        db3.ref("p2p/pendingCredits/" + l.ownerUsername + "/sharesale_" + Date.now()).set({
+                                            amount: cost, from: user, type: "share_purchase",
+                                            company: l.companyName, shares: +qty2||1,
+                                            at: new Date().toISOString()
+                                        }).catch(()=>{});
+                                    }
+                                    // Update share price — buying pushes price up by 0.5% per share
+                                    const db4 = getDB();
+                                    if (db4) {
+                                        const ikey = l.companyName.replace(/[^a-zA-Z0-9]/g,"_");
+                                        const newPrice = Math.round(sharePrice * (1 + 0.005 * (+qty2||1)));
+                                        db4.ref("ipo/listed/" + ikey + "/ipoData/sharePrice").set(newPrice).catch(()=>{});
+                                        db4.ref("ipo/listed/" + ikey + "/ipoData/marketCap").set(newPrice * (ipo.totalShares||1000000)).catch(()=>{});
+                                    }
                 // Track average buy price for P&L calculation
                 const prevQty = owned[key] || 0;
                 const prevAvg = window._sharePrices && window._sharePrices[key] || sharePrice;
@@ -3273,12 +3357,21 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                 }, style: { fontSize: 11, padding: "5px 8px", background: "rgba(245,200,66,0.1)", border: `1px solid ${T.gold}`, borderRadius: D.brs, color: T.gold, cursor: "pointer", fontWeight: "bold" } }, "Buy"),
                             sharesOwned > 0 && React.createElement("button", { onClick: () => {
                                     const rev = sharePrice * sharesOwned;
-                                    const gain = Math.max(0, rev - (sharePrice * sharesOwned * 0.9));
+                                    const costBasis2 = (window._sharePrices && window._sharePrices[key] || sharePrice) * sharesOwned;
+                                    const gain = Math.max(0, rev - costBasis2);
                                     const tax = applyNonDriveTax(gain);
                                     setWalletRaw(w => +(w + rev - tax).toFixed(2));
                                     window.dispatchEvent(new CustomEvent("ml_sell_ipo_share", { detail: { key } }));
-                                    showToast(`Sold ${sharesOwned} shares for $${rev.toLocaleString()} · Tax: $${tax.toLocaleString()}`, T.gold);
-                fbRecordShareSale(l.companyName, user, sharesOwned).catch(()=>{});
+                                    fbRecordShareSale(l.companyName, user, sharesOwned).catch(()=>{});
+                                    // Selling pushes price down 0.5% per share
+                                    const dbSell = getDB();
+                                    if (dbSell) {
+                                        const ikeySell = l.companyName.replace(/[^a-zA-Z0-9]/g,"_");
+                                        const newPriceSell = Math.max(10, Math.round(sharePrice * (1 - 0.005 * sharesOwned)));
+                                        dbSell.ref("ipo/listed/" + ikeySell + "/ipoData/sharePrice").set(newPriceSell).catch(()=>{});
+                                        dbSell.ref("ipo/listed/" + ikeySell + "/ipoData/marketCap").set(newPriceSell * (ipo.totalShares||1000000)).catch(()=>{});
+                                    }
+                                    showToast(rev > costBasis2 ? `✅ Sold ${sharesOwned} shares · Profit: ${fmt(rev-costBasis2-tax)} after tax` : `📉 Sold at a loss: ${fmt(rev)} received`, rev > costBasis2 ? T.green : T.orange);
                                 }, style: { fontSize: 11, padding: "5px 8px", background: "rgba(255,71,87,0.1)", border: `1px solid ${T.red}`, borderRadius: D.brs, color: T.red, cursor: "pointer", fontWeight: "bold" } }, "Sell"))))));
         })));
 }
