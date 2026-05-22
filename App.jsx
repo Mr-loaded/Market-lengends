@@ -269,6 +269,8 @@ const DEBT_REPAY_RATE = 0.50; // 50% of drive income goes to debt repayment
 const BAILOUT_MIN = 100; // minimum bail out amount
 // Asset boost multipliers — assets amplify drive earnings, not replace them
 function getAssetBoost(owned) {
+    // Each UNIQUE asset type gives a boost — owning multiples of same asset
+    // does NOT multiply the boost (prevents exploit)
     const boosts = {
         studio: 0.10, duplex: 0.15, mall: 0.20, warehouse: 0.25, hotel: 0.30, office: 0.40,
         gold: 0.05, silver: 0.03, oil: 0.08, agri: 0.10,
@@ -278,9 +280,11 @@ function getAssetBoost(owned) {
         fineart: 0.05, watch: 0.03,
     };
     let boost = 1.0;
-    Object.keys(boosts).forEach(k => { if (owned[k])
+    // owned[k] > 0 means asset is owned — boost only applied ONCE per asset type
+    Object.keys(boosts).forEach(k => { if (owned[k] && owned[k] > 0)
         boost += boosts[k]; });
-    return +boost.toFixed(2);
+    // Cap total boost at 3.5x maximum — prevents any exploit
+    return +Math.min(boost, 3.5).toFixed(2);
 }
 // ── GLOBAL LEADERBOARD (shared storage key) ───────────────────────────────────
 const LB_KEY = "ml_leaderboard_v1";
@@ -449,11 +453,79 @@ async function fbDefaultLoan(loanId) {
 }
 // IPO listings in Firebase
 async function fbPublishIPO(companyName, ipoData, ownerSave) {
-    const db = getDB();
-    if (!db)
-        return;
-    const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
-    await db.ref("ipo/listed/" + key).set({ companyName, ipoData, ownerUsername: ownerSave.username || "", netWorth: ownerSave.netWorth || 0, ledgerCount: (ownerSave.companyLedger || []).length, totalDriveIncome: ownerSave.totalDrivingIncome || 0, totalExpenses: (ownerSave.companyLedger || []).reduce((s, r) => s + (r.totalExpenses || 0), 0), updatedAt: Date.now() });
+    try {
+        const db = getDB(); if (!db) return;
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const ledger = ownerSave.companyLedger || [];
+        const totalExpenses = ledger.reduce((s, r) => s + (r.totalExpenses || 0), 0);
+        await db.ref("ipo/listed/" + key).set({
+            companyName, ipoData,
+            ownerUsername: ownerSave.username || "",
+            netWorth: ownerSave.netWorth || 0,
+            ledger: ledger.slice(0, 20), // last 20 drives
+            ledgerCount: ledger.length,
+            totalDriveIncome: ownerSave.totalDrivingIncome || 0,
+            totalTaxPaid: ownerSave.totalTaxPaid || 0,
+            totalExpenses,
+            updatedAt: Date.now()
+        });
+        console.log("IPO published:", companyName, "income:", ownerSave.totalDrivingIncome);
+    } catch(e) { console.error("fbPublishIPO error:", e); }
+}
+
+async function fbDistributeDividends(companyName, driveIncome, ownerUsername) {
+    try {
+        const db = getDB(); if (!db) return;
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const snap = await db.ref("ipo/shareholders/" + key).once("value");
+        const shareholders = snap.val();
+        if (!shareholders) return;
+        const dividendPool = Math.round(driveIncome * 0.10);
+        if (dividendPool <= 0) return;
+        const entries = Object.entries(shareholders);
+        const totalShares = entries.reduce((s, [,v]) => s + (v.shares || 0), 0);
+        if (totalShares <= 0) return;
+        for (const [shareholder, data] of entries) {
+            if (shareholder === ownerUsername) continue;
+            const pct = (data.shares || 0) / totalShares;
+            const dividend = Math.round(dividendPool * pct);
+            if (dividend <= 0) continue;
+            await db.ref("p2p/pendingCredits/" + shareholder + "/div_" + key + "_" + Date.now()).set({
+                amount: dividend, from: companyName, type: "dividend", at: new Date().toISOString()
+            });
+        }
+    } catch(e) {}
+}
+
+async function fbRecordSharePurchase(companyName, buyer, qty, pricePerShare) {
+    try {
+        const db = getDB(); if (!db) return;
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const snap = await db.ref("ipo/shareholders/" + key + "/" + buyer).once("value");
+        const existing = snap.val() || {shares:0,totalInvested:0};
+        await db.ref("ipo/shareholders/" + key + "/" + buyer).set({
+            shares: (existing.shares||0) + qty,
+            totalInvested: (existing.totalInvested||0) + (qty * pricePerShare),
+            lastBought: new Date().toISOString(),
+            username: buyer
+        });
+    } catch(e) {}
+}
+
+async function fbRecordShareSale(companyName, seller, qty) {
+    try {
+        const db = getDB(); if (!db) return;
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const snap = await db.ref("ipo/shareholders/" + key + "/" + seller).once("value");
+        const existing = snap.val();
+        if (!existing) return;
+        const newQty = Math.max(0, (existing.shares||0) - qty);
+        if (newQty === 0) {
+            await db.ref("ipo/shareholders/" + key + "/" + seller).remove();
+        } else {
+            await db.ref("ipo/shareholders/" + key + "/" + seller + "/shares").set(newQty);
+        }
+    } catch(e) {}
 }
 function fbSubscribeIPO(cb) {
     const db = getDB();
@@ -1724,10 +1796,18 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
     }
     function applyQuizResult(pass, reason, item) {
         const s = g.current;
-        const boost = Math.round(s.grossEarned * DRIVE_BOOST);
+        // IMPORTANT: boost/penalty based on earnings since LAST quiz only
+        // prevents exploit of compounding boost on lifetime earnings
+        const earnedSinceLastQuiz = Math.max(0, s.grossEarned - (s.lastQuizEarned || 0));
+        const boost = Math.round(earnedSinceLastQuiz * DRIVE_BOOST);
+        const penalty = Math.round(earnedSinceLastQuiz * DRIVE_PENALTY);
+        // Cap boost at reasonable maximum per quiz — $500K max
+        const cappedBoost = Math.min(boost, 500000);
+        const cappedPenalty = Math.min(penalty, 500000);
         if (pass) {
-            s.balance += boost;
-            s.grossEarned += boost;
+            s.balance += cappedBoost;
+            s.grossEarned += cappedBoost;
+            s.lastQuizEarned = s.grossEarned; // reset baseline
             s.quizzesPassed = (s.quizzesPassed || 0) + 1;
             setDispBal(Math.round(s.balance));
             onWalletChange(Math.max(0, s.balance));
@@ -1735,9 +1815,9 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
                 onLearnComplete(item.id, item.xpReward || 50);
         }
         else {
-            const penalty = Math.round(s.grossEarned * DRIVE_PENALTY);
-            s.balance = Math.max(0, s.balance - penalty);
-            s.grossEarned = Math.max(0, s.grossEarned - penalty);
+            s.balance = Math.max(0, s.balance - cappedPenalty);
+            s.grossEarned = Math.max(0, s.grossEarned - cappedPenalty);
+            s.lastQuizEarned = s.grossEarned; // reset baseline
             s.quizzesFailed = (s.quizzesFailed || 0) + 1;
             setDispBal(Math.round(s.balance));
             onWalletChange(Math.max(0, s.balance));
@@ -2736,6 +2816,20 @@ function IPOScreen({ netWorth, wallet, companyName, isRegistered, ipoData, valua
     const [offerPct, setOfferPct] = useState("20");
     const [offerPrice, setOfferPrice] = useState("");
     const [err, setErr] = useState("");
+    const [shareholders, setShareholders] = useState([]);
+
+    // Load shareholders from Firebase
+    useEffect(() => {
+        if (!companyName || !ipoData) return;
+        const db = getDB(); if (!db) return;
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const ref = db.ref("ipo/shareholders/" + key);
+        ref.on("value", snap => {
+            const v = snap.val();
+            setShareholders(v ? Object.values(v).sort((a,b) => (b.shares||0) - (a.shares||0)) : []);
+        });
+        return () => ref.off();
+    }, [companyName, ipoData]);
     const unlocked = isRegistered && netWorth >= IPO_UNLOCK_NET_WORTH && valuationUnlocked;
     const ipoLockReason = !isRegistered ? "Register a company first" : !valuationUnlocked ? "Unlock the Stock Valuation App first (reach $50M driving income)" : netWorth < IPO_UNLOCK_NET_WORTH ? `Reach ${fmt(IPO_UNLOCK_NET_WORTH)} net worth (current: ${fmt(netWorth)})` : "";
     const isListed = ipoData && ipoData.stage === "Listed";
@@ -3049,7 +3143,9 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     setWalletRaw(w => +(w - cost).toFixed(2));
                                     // update owned via parent — use window event to communicate
                                     window.dispatchEvent(new CustomEvent("ml_buy_ipo_share", { detail: { key, qty: +qty2 || 1 } }));
-                                    showToast(`Bought ${qty2} shares in ${l.companyName}`, T.green);
+                                    fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
+                showToast(`Bought ${qty2} shares in ${l.companyName}! You'll earn dividends when they drive.`, T.green);
+                fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
                                 }, style: { fontSize: 11, padding: "5px 8px", background: "rgba(245,200,66,0.1)", border: `1px solid ${T.gold}`, borderRadius: D.brs, color: T.gold, cursor: "pointer", fontWeight: "bold" } }, "Buy"),
                             sharesOwned > 0 && React.createElement("button", { onClick: () => {
                                     const rev = sharePrice * sharesOwned;
@@ -3058,6 +3154,7 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     setWalletRaw(w => +(w + rev - tax).toFixed(2));
                                     window.dispatchEvent(new CustomEvent("ml_sell_ipo_share", { detail: { key } }));
                                     showToast(`Sold ${sharesOwned} shares for $${rev.toLocaleString()} · Tax: $${tax.toLocaleString()}`, T.gold);
+                fbRecordShareSale(l.companyName, user, sharesOwned).catch(()=>{});
                                 }, style: { fontSize: 11, padding: "5px 8px", background: "rgba(255,71,87,0.1)", border: `1px solid ${T.red}`, borderRadius: D.brs, color: T.red, cursor: "pointer", fontWeight: "bold" } }, "Sell"))))));
         })));
 }
@@ -3473,13 +3570,44 @@ function P2PMarketplace({ user, wallet, netWorth, totalDrivingIncome, isRegister
             })))));
 }
 // ── IPO COMPANY PROFILE (public view) ────────────────────────────────────────
-function IPOProfile({ companyName, ipoData, ownerSave, onClose }) {
-    if (!ipoData || !ownerSave)
-        return null;
-    const ledger = ownerSave.companyLedger || [];
-    const totalIncome = ledger.reduce((s, r) => s + (r.driveIncome || 0), 0);
-    const totalExpenses = ledger.reduce((s, r) => s + (r.totalExpenses || 0), 0);
-    const totalTax = ledger.reduce((s, r) => s + (r.taxPaid || 0), 0);
+function IPOProfile({ companyName, ipoData, ownerSave, onClose, currentUser }) {
+    if (!ipoData) return null;
+    const [liveSave, setLiveSave] = useState(ownerSave || {});
+    const [shareholders, setShareholders] = useState([]);
+    const [liveIPO, setLiveIPO] = useState(null);
+
+    // Load fresh data from Firebase
+    useEffect(() => {
+        const db = getDB(); if (!db) return;
+        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        // Load full IPO data including financials
+        db.ref("ipo/listed/" + key).once("value").then(snap => {
+            const v = snap.val();
+            if (v) setLiveIPO(v);
+        }).catch(() => {});
+        // Load shareholders
+        db.ref("ipo/shareholders/" + key).once("value").then(snap => {
+            const v = snap.val();
+            if (v) setShareholders(Object.values(v).sort((a,b) => (b.shares||0)-(a.shares||0)));
+        }).catch(() => {});
+        // Also try loading from accounts
+        db.ref("accounts").once("value").then(snap => {
+            const all = snap.val();
+            if (!all) return;
+            const owner = Object.values(all).find(a =>
+                a.save && a.save.companyName &&
+                a.save.companyName.toLowerCase() === companyName.toLowerCase()
+            );
+            if (owner && owner.save) setLiveSave(owner.save);
+        }).catch(() => {});
+    }, [companyName]);
+
+    const ledger = liveSave.companyLedger || [];
+    const totalIncome = liveIPO?.totalDriveIncome || liveSave.totalDrivingIncome || ledger.reduce((s, r) => s + (r.driveIncome || 0), 0);
+    const totalExpenses = liveIPO?.totalExpenses || ledger.reduce((s, r) => s + (r.totalExpenses || 0), 0);
+    const totalTax = liveIPO?.totalTaxPaid || liveSave.totalTaxPaid || ledger.reduce((s, r) => s + (r.taxPaid || 0), 0);
+    const isOwner = currentUser && (liveSave.username || "").toLowerCase() === currentUser.toLowerCase();
+    const totalSharesSold = shareholders.reduce((s, sh) => s + (sh.shares||0), 0);
     return (React.createElement("div", { style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.88)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Segoe UI',sans-serif", overflowY: "auto" } },
         React.createElement("div", { style: { maxWidth: 420, width: "100%", background: T.surface, border: `1px solid ${T.gold}44`, borderRadius: D.br, padding: 20 } },
             React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
@@ -3494,6 +3622,19 @@ function IPOProfile({ companyName, ipoData, ownerSave, onClose }) {
             React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 } }, [{ l: "Share Price", v: fmt(ipoData.sharePrice || 0), c: T.gold }, { l: "Total Shares", v: (ipoData.totalShares || 0).toLocaleString(), c: T.text }, { l: "Shares Offered", v: (ipoData.sharesOffered || 0).toLocaleString(), c: T.cyan }, { l: "Stage", v: ipoData.stage, c: T.green }, { l: "Total Drive Income", v: fmt(totalIncome), c: T.green }, { l: "Total Expenses", v: fmt(totalExpenses), c: T.orange }, { l: "Total Tax Paid", v: fmt(totalTax), c: T.red }, { l: "Net Worth", v: fmt(ownerSave.netWorth || 0), c: T.cyan }].map(m => (React.createElement("div", { key: m.l, style: { background: T.card, borderRadius: D.brs, padding: "8px 10px", border: `1px solid ${T.border}` } },
                 React.createElement("div", { style: { fontSize: 9, color: T.muted, marginBottom: 2 } }, m.l),
                 React.createElement("div", { style: { fontSize: 13, fontWeight: "bold", fontFamily: "monospace", color: m.c } }, m.v))))),
+            
+            shareholders.length > 0 && React.createElement("div", { style: { marginBottom: 14 } },
+                React.createElement("div", { style: { fontWeight: "bold", fontSize: 12, color: T.gold, marginBottom: 8 } },
+                    isOwner ? `👥 Your Shareholders (${shareholders.length} investors · ${totalSharesSold.toLocaleString()} shares sold)` : `👥 Shareholders`
+                ),
+                React.createElement("div", { style: { maxHeight: 150, overflowY: "auto" } },
+                    shareholders.map((sh, i) => React.createElement("div", { key: i, style: { display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${T.border}`, fontSize: 11 } },
+                        React.createElement("span", { style: { color: T.text, fontWeight: "bold" } }, sh.username || "Unknown"),
+                        React.createElement("span", { style: { color: T.cyan } }, (sh.shares||0).toLocaleString(), " shares"),
+                        React.createElement("span", { style: { color: T.gold } }, fmt(sh.totalInvested||0))
+                    ))
+                )
+            ),
             ledger.length > 0 && React.createElement(React.Fragment, null,
                 React.createElement("div", { style: { fontWeight: "bold", fontSize: 12, color: T.cyan, marginBottom: 8 } },
                     "Financial Ledger (",
@@ -4061,6 +4202,22 @@ function App() {
         setWalletRaw(w => +(w - totalDeduction).toFixed(2));
         setTDI(t => t + earned);
         setTTP(t => t + taxAmount);
+        // Distribute dividends to shareholders if company is listed
+        if (isRegistered && ipoData && (ipoData.stage === "Listed" || ipoData.stage === "Blue Chip") && earned > 0) {
+            fbDistributeDividends(companyName, earned, user).catch(() => {});
+            // Re-publish updated IPO data with latest financials
+            const ownerSave = { username: user, netWorth, totalDrivingIncome: totalDrivingIncome + earned, totalTaxPaid: totalTaxPaid + taxAmount, companyLedger, companyName, isRegistered };
+            fbPublishIPO(companyName, ipoData, ownerSave).catch(() => {});
+        }
+        // Distribute 10% of drive income as dividends to shareholders
+        if (isRegistered && companyName && earned > 0) {
+            fbDistributeDividends(companyName, earned, user).catch(() => {});
+            // Also update IPO listing with latest financials
+            if (ipoData && (ipoData.stage === "Listed" || ipoData.stage === "Blue Chip")) {
+                const ownerSave = { username: user, netWorth, totalDrivingIncome: totalDrivingIncome + earned, totalTaxPaid: totalTaxPaid + taxAmount, companyLedger, companyName, isRegistered };
+                fbPublishIPO(companyName, ipoData, ownerSave).catch(() => {});
+            }
+        }
         // Save full record to company ledger
         if (isRegistered && expenseBreakdown) {
             const record = {
@@ -4130,13 +4287,21 @@ function App() {
                 }
             }
         } catch(e) {}
-        if (owned[p.id]) { showToast("Already owned!", T.red); return; }
         const currentCost = (assetPrices && assetPrices[p.id]) || p.baseCost || p.cost || 0;
         if (wallet < currentCost) { showToast("Not enough cash!", T.red); return; }
-        setOwned(o => ({ ...o, [p.id]: true }));
-        setPurchasePrices(pp => ({ ...pp, [p.id]: currentCost }));
+        const currentQty = owned[p.id] || 0;
+        const newQty = currentQty + 1;
+        // Calculate new average purchase price
+        const oldAvg = purchasePrices[p.id] || 0;
+        const newAvg = currentQty === 0 ? currentCost : Math.round((oldAvg * currentQty + currentCost) / newQty);
+        setOwned(o => ({ ...o, [p.id]: newQty }));
+        setPurchasePrices(pp => ({ ...pp, [p.id]: newAvg }));
         setWalletRaw(w => +(w - currentCost).toFixed(2));
-        showToast(`Purchased ${p.name} for ${fmt(currentCost)}!`, T.green);
+        if (currentQty === 0) {
+            showToast(`Purchased ${p.name} for ${fmt(currentCost)}!`, T.green);
+        } else {
+            showToast(`Bought more ${p.name}! Now own ${newQty} units. Avg cost: ${fmt(newAvg)}`, T.cyan);
+        }
     }
     function applyNonDriveTax(gain) {
         // 30% for registered company, 40% for individuals on non-drive income
@@ -4147,8 +4312,19 @@ function App() {
         setTTP(t => t + tax);
         return tax;
     }
-    function sellProp(p) { if (!owned[p.id])
-        return; const val = p.id === "crypto" ? Math.round((assetLiquidate(p, assetPrices) || p.baseCost) * (0.85 + Math.random() * 0.4)) : assetLiquidate(p, assetPrices) || p.baseCost; const gain = Math.max(0, val - (p.baseCost || 0)); const tax = applyNonDriveTax(gain); setOwned(o => ({ ...o, [p.id]: false })); setWalletRaw(w => +(w + val - tax).toFixed(2)); showToast(`Sold ${p.name} for ${fmt(val)} · Tax on gain: ${fmt(tax)}`, T.gold); }
+    function sellProp(p) { if (!owned[p.id] || owned[p.id] <= 0)
+        return;
+        const currentQty = owned[p.id] || 0;
+        const val = p.id === "crypto" ? Math.round((assetLiquidate(p, assetPrices) || p.baseCost) * (0.85 + Math.random() * 0.4)) : assetLiquidate(p, assetPrices) || p.baseCost;
+        const avgCost = purchasePrices[p.id] || p.baseCost || 0;
+        const gain = Math.max(0, val - avgCost);
+        const tax = applyNonDriveTax(gain);
+        const newQty = Math.max(0, currentQty - 1);
+        setOwned(o => ({ ...o, [p.id]: newQty }));
+        if (newQty === 0) setPurchasePrices(pp => ({ ...pp, [p.id]: 0 }));
+        setWalletRaw(w => +(w + val - tax).toFixed(2));
+        showToast(newQty > 0 ? `Sold 1 ${p.name} for ${fmt(val)} · ${newQty} units left · Tax: ${fmt(tax)}` : `Sold last ${p.name} for ${fmt(val)} · Tax: ${fmt(tax)}`, T.gold);
+    }
     function lend(f) {
         const amt = parseInt(lendAmt[f.id] || 0);
         if (!amt || amt <= 0) {
@@ -4247,7 +4423,7 @@ function App() {
                 setBankruptcyData(bd => ({ ...bd, status: "recovering" }));
                 setShowBankruptcy(false);
             } })),
-        showIPOProfile && React.createElement(IPOProfile, { companyName: showIPOProfile.companyName, ipoData: showIPOProfile.ipoData, ownerSave: showIPOProfile.ownerSave, onClose: () => setShowIPOProfile(null) }),
+        showIPOProfile && React.createElement(IPOProfile, { companyName: showIPOProfile.companyName, ipoData: showIPOProfile.ipoData, ownerSave: showIPOProfile.ownerSave, onClose: () => setShowIPOProfile(null), currentUser: user }),
         showCoach && React.createElement(AICoachModal, { netWorth: netWorth, wallet: wallet, portfolio: portfolio, xp: xp, isRegistered: isRegistered, onClose: () => setShowCoach(false) }),
         milestone && React.createElement(MilestoneCelebration, { milestone: milestone, onClose: () => setMilestone(null) }),
         showTour && React.createElement(OnboardingTour, { onFinish: () => setShowTour(false) }),
@@ -4476,18 +4652,21 @@ function App() {
                             React.createElement("div", { style: { display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap" } },
                                 React.createElement("span", { style: { fontWeight: "bold", fontSize: 12, color: T.text } }, p.name),
                                 React.createElement("span", { style: { fontSize: 9, padding: "1px 5px", borderRadius: 20, background: T.surface, color: T.muted, border: `1px solid ${T.border}` } }, p.type),
-                                isOwned && React.createElement("span", { style: { fontSize: 9, padding: "1px 5px", borderRadius: 20, background: "rgba(0,255,136,0.1)", color: T.green, border: `1px solid ${T.green}55` } }, "Owned")),
+                                isOwned && React.createElement("span", { style: { fontSize: 9, padding: "1px 5px", borderRadius: 20, background: "rgba(0,255,136,0.1)", color: T.green, border: `1px solid ${T.green}55` } }, `${owned[p.id]}x Owned`)),
                             React.createElement("div", { style: { fontSize: 10, color: T.muted, marginTop: 1 } }, p.desc),
                             React.createElement("div", { style: { fontSize: 10, color: T.green, marginTop: 1 } },
                                 assetIncome(p, assetPrices || {}) > 0 ? `+${fmt(assetIncome(p, assetPrices || {}))}/day` : "No income",
                                 " \u00B7 Current: ",
                                 fmt((assetPrices && assetPrices[p.id]) || p.baseCost)),
                             isOwned && purchasePrices[p.id] && (() => {
-                                const bought = purchasePrices[p.id];
+                                const bought = purchasePrices[p.id]; // average cost per unit
+                                const qty = owned[p.id] || 1;
                                 const current = (assetPrices && assetPrices[p.id]) || p.baseCost;
                                 const gain = current - bought;
                                 const gainPct = ((gain / bought) * 100).toFixed(1);
                                 const isProfit = gain >= 0;
+                                const totalValue = current * qty;
+                                const totalCost = bought * qty;
                                 const signal = gain / bought >= 0.15 ? "🟢 Good time to sell" : gain / bought <= -0.10 ? "🔴 Wait — selling at a loss" : gain / bought >= 0.05 ? "🟡 Small profit — up to you" : "⚪ Near purchase price";
                                 return (React.createElement("div", { style: { marginTop: 3 } },
                                     React.createElement("span", { style: { fontSize: 10, color: T.muted } },
@@ -4503,8 +4682,9 @@ function App() {
                             })()),
                         React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } },
                             React.createElement("div", { style: { fontSize: 12, fontWeight: "bold", fontFamily: "monospace", color: T.text, marginBottom: 5 } }, fmt((assetPrices && assetPrices[p.id]) || p.baseCost)),
-                            !isOwned ? React.createElement("button", { onClick: () => buyProp(p), style: { fontSize: 11, padding: "5px 11px", background: "rgba(0,255,136,0.1)", border: `1px solid ${T.green}`, borderRadius: D.brs, color: T.green, cursor: "pointer", fontWeight: "bold" } }, "Buy")
-                                : React.createElement("button", { onClick: () => sellProp(p), style: { fontSize: 11, padding: "5px 11px", background: "rgba(255,71,87,0.1)", border: `1px solid ${T.red}`, borderRadius: D.brs, color: T.red, cursor: "pointer", fontWeight: "bold" } }, "Sell")))));
+                            React.createElement("div", { style: { display: "flex", gap: 4, flexDirection: "column", alignItems: "flex-end" } },
+                                React.createElement("button", { onClick: () => buyProp(p), style: { fontSize: 11, padding: "5px 11px", background: "rgba(0,255,136,0.1)", border: `1px solid ${T.green}`, borderRadius: D.brs, color: T.green, cursor: "pointer", fontWeight: "bold", whiteSpace: "nowrap" } }, isOwned ? "Buy More +" : "Buy"),
+                                isOwned && React.createElement("button", { onClick: () => sellProp(p), style: { fontSize: 11, padding: "5px 11px", background: "rgba(255,71,87,0.1)", border: `1px solid ${T.red}`, borderRadius: D.brs, color: T.red, cursor: "pointer", fontWeight: "bold", whiteSpace: "nowrap" } }, "Sell 1"))))));
             }),
             React.createElement(IPOInvestSection, { owned: owned, qty: qty, setQty: setQty, wallet: wallet, setWalletRaw: setWalletRaw, showToast: showToast, setShowIPOProfile: setShowIPOProfile, applyNonDriveTax: applyNonDriveTax }),
             React.createElement("div", { style: { background: T.card, border: `1px solid ${T.cyan}33`, borderRadius: D.br, padding: "10px 12px", marginTop: 8, fontSize: 12, color: T.muted, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
