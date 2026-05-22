@@ -403,9 +403,24 @@ catch { } }
 // Firebase P2P helpers
 async function fbPostLoanRequest(req) {
     const db = getDB();
-    if (!db)
+    if (!db) {
+        console.error("P2P: Firebase not ready — saving locally only");
         return saveP2P({ ...loadP2P(), requests: [...loadP2P().requests, req] });
-    await db.ref("p2p/requests/" + req.id).set(req);
+    }
+    try {
+        await db.ref("p2p/requests/" + req.id).set(req);
+        console.log("P2P: Loan request posted to Firebase:", req.id, req.borrower, req.amount);
+        // Verify it was written
+        const snap = await db.ref("p2p/requests/" + req.id).once("value");
+        if (!snap.exists()) {
+            console.error("P2P: Write verification failed — check Firebase rules");
+        }
+    } catch(e) {
+        console.error("P2P: Firebase write failed:", e.message);
+        // Fall back to localStorage
+        saveP2P({ ...loadP2P(), requests: [...loadP2P().requests, req] });
+        throw new Error("Firebase write failed: " + e.message);
+    }
 }
 async function fbAcceptLoan(req, lender) {
     const db = getDB();
@@ -2277,15 +2292,27 @@ const FIREBASE_CONFIG = {
 // Firebase helpers — initialised eagerly on page load
 let _db = null;
 function getDB() {
-    if (_db)
-        return _db;
+    if (_db) return _db;
     try {
-        if (!firebase.apps || firebase.apps.length === 0)
+        // Use pre-initialized Firebase from main.jsx (window._firebaseDB)
+        if (window._firebaseDB) {
+            _db = window._firebaseDB;
+            console.log("Market Legends: Using pre-initialized Firebase DB");
+            return _db;
+        }
+        // Fallback: initialize directly
+        if (typeof firebase === "undefined") {
+            console.warn("Firebase not available");
+            return null;
+        }
+        if (!firebase.apps || firebase.apps.length === 0) {
             firebase.initializeApp(FIREBASE_CONFIG);
+        }
         _db = firebase.database();
+        console.log("Market Legends: Firebase DB ready");
     }
     catch (e) {
-        console.error("Firebase init failed:", e);
+        console.error("Firebase init failed:", e.message);
     }
     return _db;
 }
@@ -3146,31 +3173,40 @@ function P2PMarketplace({ user, wallet, netWorth, totalDrivingIncome, isRegister
         function subscribe() {
             const db = getDB();
             if (!db) {
-                // Retry every 2 seconds until Firebase is ready
                 retryTimer = setTimeout(subscribe, 2000);
                 return;
             }
-            setFbConnected(true);
+            // Test Firebase connection first with a simple read
+            db.ref(".info/connected").on("value", snap => {
+                const connected = snap.val();
+                setFbConnected(!!connected);
+                console.log("P2P Firebase connected:", connected);
+            });
             reqRef = db.ref("p2p/requests");
             actRef = db.ref("p2p/active");
             reqRef.on("value", snap => {
                 const val = snap.val();
+                console.log("P2P requests from Firebase:", val ? Object.keys(val).length : 0, "entries");
                 const requests = val ? Object.values(val).filter(r => r && r.status === "open") : [];
                 setP2pDataState(prev => ({ ...prev, requests }));
+            }, err => {
+                console.error("P2P requests read error:", err.message);
+                setFbConnected(false);
             });
             actRef.on("value", snap => {
                 const val = snap.val();
                 const active = val ? Object.values(val).filter(a => a && a.status !== undefined) : [];
                 setP2pDataState(prev => ({ ...prev, active }));
+            }, err => {
+                console.error("P2P active read error:", err.message);
             });
         }
-        subscribe();
+        // Small delay to ensure Firebase is fully initialized
+        retryTimer = setTimeout(subscribe, 1000);
         return () => {
             clearTimeout(retryTimer);
-            if (reqRef)
-                reqRef.off();
-            if (actRef)
-                actRef.off();
+            if (reqRef) reqRef.off();
+            if (actRef) actRef.off();
         };
     }, []);
     function refresh() {
