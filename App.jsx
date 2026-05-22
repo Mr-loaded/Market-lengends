@@ -661,7 +661,7 @@ function AuthScreen({ onLogin }) {
             // Fall back to localStorage
             const accs = loadAccounts();
             if (!accs[username]) {
-                setErr("Account not found. Check your username or register.");
+                setErr("Account not found. If you played before, please re-register — your leaderboard rank is safe!");
                 setLoading(false);
                 return;
             }
@@ -678,7 +678,7 @@ function AuthScreen({ onLogin }) {
             // Offline fallback
             const accs = loadAccounts();
             if (!accs[username]) {
-                setErr("Account not found.");
+                setErr("Account not found. Please re-register — your leaderboard rank is safe!");
                 setLoading(false);
                 return;
             }
@@ -800,7 +800,10 @@ function AuthScreen({ onLogin }) {
                         React.createElement("label", { style: { display: "block", fontSize: 11, fontWeight: 500, color: "#bac9cc", marginBottom: 6, letterSpacing: "0.05em", textTransform: "uppercase" } }, "Username"),
                         React.createElement("div", { style: { position: "relative" } },
                             React.createElement("span", { style: { position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#6B7FA0", fontSize: 16, fontFamily: "'Material Symbols Outlined'" } }, "person"),
-                            React.createElement("input", { className: "ml-input", value: username, onChange: e => setUsername(e.target.value), placeholder: "legendary_trader", onKeyDown: e => e.key === "Enter" && (isLogin ? doLogin() : doRegister()) }))),
+                            React.createElement("div", { style: { background: "rgba(0,229,255,0.08)", border: "1px solid rgba(0,229,255,0.3)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#00e5ff", lineHeight: 1.6 } },
+                            "🔄 ", React.createElement("strong", null, "Moved to a new server?"), " Please re-register with your username. Your leaderboard rank and company name are safe!"
+                        ),
+                        React.createElement("input", { className: "ml-input", value: username, onChange: e => setUsername(e.target.value), placeholder: "legendary_trader", onKeyDown: e => e.key === "Enter" && (isLogin ? doLogin() : doRegister()) }))),
                     !isLogin && (React.createElement("div", null,
                         React.createElement("label", { style: { display: "block", fontSize: 11, fontWeight: 500, color: "#bac9cc", marginBottom: 6, letterSpacing: "0.05em", textTransform: "uppercase" } }, "Email"),
                         React.createElement("div", { style: { position: "relative" } },
@@ -3548,6 +3551,38 @@ function App() {
         const id = setInterval(() => { setAssetPrices(prev => tickAssetPrices(prev)); }, 5000);
         return () => clearInterval(id);
     }, []);
+
+    // Check for overdue loans on login and every 5 minutes
+    useEffect(() => {
+        if (!user || !gameReady) return;
+        async function checkDefaults() {
+            const overdueLoans = await fbCheckAndProcessDefaults(user);
+            if (overdueLoans.length > 0) {
+                showToast(`⚠️ You have ${overdueLoans.length} overdue loan${overdueLoans.length > 1 ? "s" : ""}! 50% of drive income will be seized.`, T.red);
+            }
+        }
+        checkDefaults();
+        const id = setInterval(checkDefaults, 5 * 60 * 1000); // every 5 mins
+        return () => clearInterval(id);
+    }, [user, gameReady]);
+
+    // Listen for loan default notifications (for lenders)
+    useEffect(() => {
+        if (!user || !gameReady) return;
+        const db = getDB(); if (!db) return;
+        const ref = db.ref("p2p/notifications/" + user);
+        ref.on("value", snap => {
+            const v = snap.val();
+            if (!v) return;
+            Object.entries(v).forEach(([id, notif]) => {
+                if (!notif.read && notif.type === "default") {
+                    showToast(`💸 ${notif.borrower} defaulted on your loan! Auto-collection started. +10% penalty applied.`, T.orange);
+                    db.ref("p2p/notifications/" + user + "/" + id + "/read").set(true).catch(() => {});
+                }
+            });
+        });
+        return () => ref.off();
+    }, [user, gameReady]);
     // Subscribe to open P2P loan count for badge notification
     useEffect(() => {
         const db = getDB();
@@ -3835,7 +3870,7 @@ function App() {
             showToast(`Drive complete! Passive income: ${fmt(dailyPassive)}/day for 24hrs (${(multiplier * 100).toFixed(0)}% × ${assetBoost}× asset boost)`, T.gold);
         }
     }
-    function handleTaxConfirm(taxAmount, expenseBreakdown) {
+    async function handleTaxConfirm(taxAmount, expenseBreakdown) {
         const earned = taxModal.earned;
         const totalExpenses = expenseBreakdown
             ? Object.values(expenseBreakdown).reduce((s, v) => s + (parseFloat(v) || 0), 0)
@@ -3843,6 +3878,51 @@ function App() {
         const netIncome = Math.max(0, earned - totalExpenses);
         let totalDeduction = taxAmount;
         let debtRepayment = 0;
+        let loanSeizure = 0;
+
+        // AUTO-SEIZE for overdue P2P loans — 50% of drive income seized per session
+        try {
+            const db = getDB();
+            if (db) {
+                const snap = await db.ref("p2p/active").once("value");
+                const all = snap.val();
+                if (all) {
+                    const now = new Date();
+                    const overdueLoans = Object.values(all).filter(l =>
+                        l && l.borrower === user &&
+                        (l.status === "active" || l.status === "defaulted") &&
+                        new Date(l.dueDate) < now
+                    );
+                    if (overdueLoans.length > 0) {
+                        loanSeizure = Math.round(earned * LOAN_SEIZURE_RATE);
+                        totalDeduction += loanSeizure;
+                        // Distribute seized amount to lenders proportionally
+                        const perLender = Math.floor(loanSeizure / overdueLoans.length);
+                        for (const loan of overdueLoans) {
+                            if (perLender > 0) {
+                                await db.ref("p2p/pendingCredits/" + loan.lender + "/seizure_" + loan.id + "_" + Date.now()).set({
+                                    amount: perLender,
+                                    from: user,
+                                    type: "seizure",
+                                    at: new Date().toISOString()
+                                });
+                                // Reduce outstanding debt
+                                const totalOwed = loan.totalOwed || loan.amount;
+                                const newOwed = Math.max(0, totalOwed - perLender);
+                                if (newOwed === 0) {
+                                    await db.ref("p2p/active/" + loan.id + "/status").set("repaid");
+                                    showToast(`✅ Overdue loan to ${loan.lender} fully repaid via seizure!`, T.green);
+                                } else {
+                                    await db.ref("p2p/active/" + loan.id + "/totalOwed").set(newOwed);
+                                }
+                            }
+                        }
+                        showToast(`⚠️ ${fmt(loanSeizure)} seized from drive income for ${overdueLoans.length} overdue loan${overdueLoans.length > 1 ? "s" : ""}`, T.red);
+                    }
+                }
+            }
+        } catch(e) { console.error("Loan seizure error:", e); }
+
         // If in debt recovery mode — 50% of drive income goes to debt repayment
         if (bankruptcyData && bankruptcyData.status === "recovering" && (bankruptcyData.debt || 0) < 0) {
             debtRepayment = Math.round(earned * DEBT_REPAY_RATE);
@@ -3915,13 +3995,31 @@ function App() {
             setTimeout(() => setDebrief({ trade, stock }), 800);
         }
     }
-    function buyProp(p) { if (owned[p.id]) {
-        showToast("Already owned!", T.red);
-        return;
-    } const currentCost = (assetPrices && assetPrices[p.id]) || p.baseCost || p.cost || 0; if (wallet < currentCost) {
-        showToast("Not enough cash!", T.red);
-        return;
-    } setOwned(o => ({ ...o, [p.id]: true })); setPurchasePrices(pp => ({ ...pp, [p.id]: currentCost })); setWalletRaw(w => +(w - currentCost).toFixed(2)); showToast(`Purchased ${p.name} for ${fmt(currentCost)}!`, T.green); }
+    async function buyProp(p) {
+        // Block buying if overdue loans exist
+        try {
+            const db = getDB();
+            if (db) {
+                const snap = await db.ref("p2p/active").once("value");
+                const all = snap.val();
+                if (all) {
+                    const now = new Date();
+                    const overdue = Object.values(all).filter(l => l && l.borrower === user && (l.status === "defaulted" || (l.status === "active" && new Date(l.dueDate) < now)));
+                    if (overdue.length > 0) {
+                        showToast(`🔒 Buying locked — ${overdue.length} overdue loan${overdue.length > 1 ? "s" : ""}. Drive to repay first!`, T.red);
+                        return;
+                    }
+                }
+            }
+        } catch(e) {}
+        if (owned[p.id]) { showToast("Already owned!", T.red); return; }
+        const currentCost = (assetPrices && assetPrices[p.id]) || p.baseCost || p.cost || 0;
+        if (wallet < currentCost) { showToast("Not enough cash!", T.red); return; }
+        setOwned(o => ({ ...o, [p.id]: true }));
+        setPurchasePrices(pp => ({ ...pp, [p.id]: currentCost }));
+        setWalletRaw(w => +(w - currentCost).toFixed(2));
+        showToast(`Purchased ${p.name} for ${fmt(currentCost)}!`, T.green);
+    }
     function applyNonDriveTax(gain) {
         // 30% for registered company, 40% for individuals on non-drive income
         if (gain <= 0)
