@@ -1,6 +1,6 @@
-// Firebase configuration
-import firebase from 'firebase/compat/app'
-import 'firebase/compat/database'
+// Firebase initialization as npm package — no CDN dependency
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/database';
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyC7xNZRGA-t2rxVXn9Md1aaw42PycqE-oo",
@@ -10,10 +10,11 @@ const FIREBASE_CONFIG = {
   storageBucket: "marketlengend.firebasestorage.app",
   messagingSenderId: "637848488159",
   appId: "1:637848488159:web:5597855cc8eab35a58416a"
-}
+};
 
 if (!firebase.apps.length) {
-  firebase.initializeApp(FIREBASE_CONFIG)
+  firebase.initializeApp(FIREBASE_CONFIG);
 }
 
-export default firebase
+export const db = firebase.database();
+export default firebase;
