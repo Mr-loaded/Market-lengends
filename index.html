@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <title>Market Legends</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    html,body{background:#070c18;min-height:100%;font-family:'Inter','Segoe UI',sans-serif;}
+    #root{max-width:700px;margin:0 auto;min-height:100vh;}
+    input,button,textarea,select{font-family:inherit;}
+    ::-webkit-scrollbar{width:4px;}
+    ::-webkit-scrollbar-track{background:#070c18;}
+    ::-webkit-scrollbar-thumb{background:#1e2d45;border-radius:2px;}
+  </style>
+</head>
+<body>
+  <div id="root">
+    <!-- Loading screen shown until React mounts -->
+    <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:#070c18;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Inter,sans-serif;">
+      <div style="font-size:48px;margin-bottom:16px;">🏆</div>
+      <div style="font-size:22px;font-weight:900;background:linear-gradient(45deg,#00e5ff,#00ff88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px;">Market Legends</div>
+      <div style="color:#6b7fa0;font-size:13px;">Loading...</div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
