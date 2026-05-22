@@ -1,6 +1,6 @@
+/* global firebase */
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 
-const { useState, useEffect, useRef, useCallback } = React;
 // ── ANIMATED NUMBER HOOK ───────────────────────────────────────────────────────
 function useAnimatedNumber(target, duration = 600) {
     const [display, setDisplay] = useState(target);
@@ -4415,9 +4415,7 @@ function App() {
         tab === "challenges" && (React.createElement(ChallengesScreen, { currentUser: user, netWorth: netWorth, streak: streak, totalChallengesWon: totalChallengesWon, onChallengeWon: () => setTotalChallengesWon(c => c + 1) })),
         tab === "ipo" && (React.createElement(IPOScreen, { netWorth: netWorth, wallet: wallet, companyName: companyName, isRegistered: isRegistered, ipoData: ipoData, valuationUnlocked: valuationUnlocked, onLaunchIPO: handleLaunchIPO, onSellShares: handleSellShares, onBuyback: handleBuyback })),
         tab === "runner" && (React.createElement(MarketRunner, { wallet: wallet, onWalletChange: v => setWalletRaw(v), onBillPaid: amt => setTotalBills(t => t + amt), onExitRoad: handleExitRoad, propIncome: propIncome, carSkin: carSkin, completedLessons: completedLessons, onLearnComplete: handleLearnComplete, isRegistered: isRegistered }))));
-    div >
-    ;
-    ;
+    
 }
 
 export default App
