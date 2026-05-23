@@ -2757,10 +2757,8 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
             setStatus("loading");
             return () => clearInterval(retryTimer);
         }
-        // Write this player's score
-        // SECURITY: weekly income is server-incremented, not client-reported
-// We increment by the DELTA not replace with client value
-const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIncome: Math.round(totalDrivingIncome), weekStart: weekStart||"", taxPaid: Math.round(totalTaxPaid), company: companyName || "Unregistered", updatedAt: Date.now() };
+        // Write this player's score to Firebase leaderboard
+        const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIncome: Math.round(totalDrivingIncome), taxPaid: Math.round(totalTaxPaid), company: companyName || "Unregistered", updatedAt: Date.now() };
         db.ref("leaderboard/" + currentUser.toLowerCase()).set({ ...entry, username: currentUser }).catch(() => { });
         // Subscribe to live leaderboard (top 100 by netWorth)
         const ref = db.ref("leaderboard").orderByChild("netWorth").limitToLast(100);
