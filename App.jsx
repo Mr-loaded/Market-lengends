@@ -1032,8 +1032,13 @@ function TaxApportionScreen({ drivingIncome, isRegistered, companyName, onConfir
         { id: "misc", label: "Miscellaneous Ops", icon: "ti-dots", placeholder: "e.g. 5000" },
     ];
     const parsed = Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, parseFloat(v) || 0]));
-    const totalExpenses = Object.values(parsed).reduce((s, v) => s + v, 0);
-    // Drive income minus all deductions = what's left (this is checked against $500K threshold)
+    const rawExpenses = Object.values(parsed).reduce((s, v) => s + v, 0);
+    // Registered companies MUST deduct minimum 5% of drive income as operational costs
+    // This prevents zero-deduction abuse to stay under $500K threshold
+    const minExpenses = isRegistered ? Math.round(drivingIncome * 0.05) : 0;
+    const totalExpenses = isRegistered ? Math.max(rawExpenses, minExpenses) : rawExpenses;
+    const autoMinApplied = isRegistered && rawExpenses < minExpenses;
+    // Drive income minus all deductions = what's left (checked against $500K threshold)
     const incomeAfterDeductions = Math.max(0, drivingIncome - totalExpenses);
     // Registered company: 30% only if income AFTER deductions > $500K
     const companyTaxApplies = isRegistered && incomeAfterDeductions > COMPANY_TAX_THRESHOLD;
@@ -2818,9 +2823,13 @@ function ChallengesScreen({ currentUser, netWorth, streak, totalChallengesWon, o
                                 c.days,
                                 "d \u00B7 ends ",
                                 endDate)),
-                        React.createElement("div", { style: { padding: "3px 10px", borderRadius: 20, fontSize: 10, fontWeight: "bold",
-                                background: c.status === "active" ? "rgba(0,229,255,0.1)" : c.status === "pending" ? "rgba(245,200,66,0.1)" : "rgba(107,127,160,0.1)",
-                                color: c.status === "active" ? T.cyan : c.status === "pending" ? T.gold : T.muted } }, c.status === "active" ? "● LIVE" : c.status === "pending" ? "⏳ PENDING" : "✓ DONE")),
+                        (()=>{
+                            const isExpired = c.status === "pending" && new Date() > new Date(c.startDate + c.days * 86400000);
+                            const statusLabel = c.status === "active" ? "● LIVE" : isExpired ? "❌ EXPIRED" : c.status === "pending" ? "⏳ PENDING" : "✓ DONE";
+                            const statusBg = c.status === "active" ? "rgba(0,229,255,0.1)" : isExpired ? "rgba(255,71,87,0.1)" : c.status === "pending" ? "rgba(245,200,66,0.1)" : "rgba(107,127,160,0.1)";
+                            const statusColor = c.status === "active" ? T.cyan : isExpired ? T.red : c.status === "pending" ? T.gold : T.muted;
+                            return React.createElement("div", { style: { padding: "3px 10px", borderRadius: 20, fontSize: 10, fontWeight: "bold", background: statusBg, color: statusColor } }, statusLabel);
+                        })()),
                     c.status === "active" && res && (React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
                         React.createElement("div", { style: { background: res.winning ? "rgba(0,255,136,0.06)" : "rgba(255,71,87,0.06)", border: `1px solid ${res.winning ? T.green + "44" : T.red + "44"}`, borderRadius: D.brs, padding: 10, textAlign: "center" } },
                             React.createElement("div", { style: { fontSize: 10, color: T.muted, marginBottom: 2 } }, "You"),
@@ -2836,10 +2845,11 @@ function ChallengesScreen({ currentUser, netWorth, streak, totalChallengesWon, o
                                 fmt(res.oppGain))))),
                     c.status === "active" && (React.createElement("button", { onClick: () => updateMyScore(c), style: { width: "100%", padding: "8px", background: "rgba(0,229,255,0.08)", border: `1px solid ${T.cyan}44`, borderRadius: D.brs, color: T.cyan, fontSize: 12, cursor: "pointer" } }, "\uD83D\uDD04 Sync my score")),
                     c.status === "pending" && !isP1 && (React.createElement("button", { onClick: () => acceptChallenge(c), style: { width: "100%", padding: "9px", background: "linear-gradient(135deg,rgba(0,255,136,0.15),rgba(0,229,255,0.1))", border: `1px solid ${T.green}`, borderRadius: D.brs, color: T.green, fontWeight: "bold", fontSize: 13, cursor: "pointer" } }, "\u2705 Accept Challenge")),
-                    c.status === "pending" && isP1 && (React.createElement("div", { style: { fontSize: 11, color: T.muted, textAlign: "center" } },
-                        "Waiting for ",
-                        opponent,
-                        " to accept\u2026"))));
+                    c.status === "pending" && isP1 && (()=>{
+                        const isExpiredC = new Date() > new Date((c.startDate||Date.now())+(c.days||1)*86400000);
+                        return React.createElement("div",{style:{fontSize:11,color:isExpiredC?T.red:T.muted,textAlign:"center"}},
+                            isExpiredC?"\u274C Expired \u2014 "+opponent+" did not accept in time":"Waiting for "+opponent+" to accept\u2026");
+                    })();
             })))));
 }
 // ── IPO SCREEN ────────────────────────────────────────────────────────────────
@@ -4088,6 +4098,27 @@ function App() {
         });
         return () => ref.off();
     }, [user, gameReady]);
+    // Auto-expire pending challenges past their end date
+    useEffect(() => {
+        if (!user || !gameReady) return;
+        const db = getDB(); if (!db) return;
+        const ref = db.ref("challenges");
+        ref.once("value").then(snap => {
+            const all = snap.val();
+            if (!all) return;
+            const now = new Date();
+            Object.entries(all).forEach(([id, ch]) => {
+                if (ch.status === "pending" && new Date(ch.endDate) < now) {
+                    db.ref("challenges/" + id + "/status").set("expired").catch(() => {});
+                }
+                // Also auto-resolve active challenges that have ended
+                if (ch.status === "active" && new Date(ch.endDate) < now) {
+                    db.ref("challenges/" + id + "/status").set("completed").catch(() => {});
+                }
+            });
+        }).catch(() => {});
+    }, [user, gameReady]);
+
     // Subscribe to open P2P loan count for badge notification
     useEffect(() => {
         const db = getDB();
@@ -4387,9 +4418,12 @@ function App() {
     }
     async function handleTaxConfirm(taxAmount, expenseBreakdown) {
         const earned = taxModal.earned;
-        const totalExpenses = expenseBreakdown
-            ? Object.values(expenseBreakdown).reduce((s, v) => s + (parseFloat(v) || 0), 0)
+        const rawExpenses = expenseBreakdown
+            ? Object.values(expenseBreakdown).filter(k => k !== '_minExpenseApplied').reduce((s, v) => s + (parseFloat(v) || 0), 0)
             : 0;
+        // Enforce minimum 5% operational expenses for registered companies
+        const minExp = isRegistered ? Math.round(earned * 0.05) : 0;
+        const totalExpenses = isRegistered ? Math.max(rawExpenses, minExp) : rawExpenses;
         const netIncome = Math.max(0, earned - totalExpenses);
         let totalDeduction = taxAmount;
         let debtRepayment = 0;
