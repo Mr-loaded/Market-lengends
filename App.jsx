@@ -2738,66 +2738,47 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
     const [status, setStatus] = useState("loading"); // loading | live | offline
     // Write current player score + subscribe to live updates
     useEffect(() => {
-        // Always try Firebase first — it IS configured and working
-        let db = getDB();
-        if (!db) {
-            // Retry every second for up to 10 seconds
-            let attempts = 0;
-            const retryTimer = setInterval(() => {
-                attempts++;
-                db = getDB();
-                if (db) {
-                    clearInterval(retryTimer);
-                    window.dispatchEvent(new Event("ml_firebase_ready"));
-                } else if (attempts >= 10) {
-                    clearInterval(retryTimer);
-                    setStatus("offline");
-                }
-            }, 1000);
-            setStatus("loading");
-            return () => clearInterval(retryTimer);
-        }
-        // Write this player's score to Firebase leaderboard
-        const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIncome: Math.round(totalDrivingIncome), taxPaid: Math.round(totalTaxPaid), company: companyName || "Unregistered", updatedAt: Date.now() };
-        db.ref("leaderboard/" + currentUser.toLowerCase()).set({ ...entry, username: currentUser }).catch(() => { });
-        // Subscribe to live leaderboard (top 100 by netWorth)
-        const ref = db.ref("leaderboard").orderByChild("netWorth").limitToLast(100);
-        const handler = snapshot => {
-            const data = snapshot.val() || {};
-            // Deduplicate by username (case-insensitive) — keep highest net worth entry
-            const seen = new Set();
-            const deduped = Object.values(data).sort((a, b) => b.netWorth - a.netWorth).filter(p => {
-                if (!p.username)
-                    return false;
-                const key = p.username.toLowerCase();
-                if (seen.has(key))
-                    return false;
-                seen.add(key);
-                return true;
-            });
-            const lb = deduped.slice(0, 100);
-            setBoard(lb);
-            setStatus("live");
-            // Expose to parent App for admin panel
-            window._globalLeaderboard = lb;
-            // Check if user is top 5 for reward notification
-            const myRankIdx = lb.findIndex(p => p.username && p.username.toLowerCase() === currentUser.toLowerCase());
-            if (myRankIdx >= 0 && myRankIdx < 5) {
-                const reward = WEEKLY_REWARDS[myRankIdx];
-                const rewardKey = "ml_reward_week_" + new Date().toISOString().slice(0,7); // monthly key
-                if (!localStorage.getItem(rewardKey) && reward) {
-                    window._pendingReward = { ...reward, rank: myRankIdx + 1 };
-                }
+        // Simple direct Firebase connection — same pattern as P2P lending
+        function connect() {
+            const db = window._firebaseDB || (typeof firebase !== "undefined" && firebase.apps && firebase.apps.length > 0 ? firebase.database() : null);
+            if (!db) {
+                setTimeout(connect, 1000);
+                return;
             }
-        };
-        ref.on("value", handler, () => setStatus("offline"));
-        // Also listen for firebase ready event to reconnect
-        const onFirebaseReady = () => setStatus("loading");
-        window.addEventListener("ml_firebase_ready", onFirebaseReady);
-        return () => {
-            ref.off("value", handler);
-            window.removeEventListener("ml_firebase_ready", onFirebaseReady);
-        };
+            setStatus("live");
+            const ref = db.ref("leaderboard").orderByChild("netWorth").limitToLast(100);
+            ref.on("value", snapshot => {
+                const data = snapshot.val() || {};
+                const seen = new Set();
+                const sorted = Object.values(data)
+                    .filter(p => p && p.username)
+                    .sort((a, b) => (b.netWorth || 0) - (a.netWorth || 0))
+                    .filter(p => {
+                        const k = p.username.toLowerCase();
+                        if (seen.has(k)) return false;
+                        seen.add(k);
+                        return true;
+                    })
+                    .slice(0, 100);
+                setBoard(sorted);
+                window._globalLeaderboard = sorted;
+            }, err => {
+                console.error("Leaderboard error:", err);
+                setStatus("offline");
+            });
+            // Write current player score
+            if (currentUser) {
+                db.ref("leaderboard/" + currentUser.toLowerCase()).update({
+                    username: currentUser,
+                    netWorth: Math.round(netWorth),
+                    drivingIncome: Math.round(totalDrivingIncome),
+                    taxPaid: Math.round(totalTaxPaid),
+                    company: companyName || "Unregistered",
+                    updatedAt: Date.now()
+                }).catch(() => {});
+            }
+        }
+        connect();
     }, [netWorth, currentUser]);
     const myRank = board.findIndex(e => e.username === currentUser) + 1;
     const myRankDisplay = lbTab === "weekly" ? myRankWeekly : myRank;
