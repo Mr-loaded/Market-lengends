@@ -269,8 +269,9 @@ const DEBT_REPAY_RATE = 0.50; // 50% of drive income goes to debt repayment
 const BAILOUT_MIN = 100; // minimum bail out amount
 // Asset boost multipliers — assets amplify drive earnings, not replace them
 function getAssetBoost(owned) {
-    // Each UNIQUE asset type gives a boost — owning multiples of same asset
-    // does NOT multiply the boost (prevents exploit)
+    // Each unit owned gives proportional boost
+    // But capped at 3 units per asset type to prevent exploit
+    // Total boost capped at 3.5x maximum
     const boosts = {
         studio: 0.10, duplex: 0.15, mall: 0.20, warehouse: 0.25, hotel: 0.30, office: 0.40,
         gold: 0.05, silver: 0.03, oil: 0.08, agri: 0.10,
@@ -280,10 +281,15 @@ function getAssetBoost(owned) {
         fineart: 0.05, watch: 0.03,
     };
     let boost = 1.0;
-    // owned[k] > 0 means asset is owned — boost only applied ONCE per asset type
-    Object.keys(boosts).forEach(k => { if (owned[k] && owned[k] > 0)
-        boost += boosts[k]; });
-    // Cap total boost at 3.5x maximum — prevents any exploit
+    Object.keys(boosts).forEach(k => {
+        const qty = owned[k] || 0;
+        if (qty > 0) {
+            // Each unit adds boost, max 3 units per asset type
+            const units = Math.min(qty, 3);
+            boost += boosts[k] * units;
+        }
+    });
+    // Cap total boost at 3.5x maximum
     return +Math.min(boost, 3.5).toFixed(2);
 }
 // ── GLOBAL LEADERBOARD (shared storage key) ───────────────────────────────────
@@ -458,9 +464,16 @@ async function fbPublishIPO(companyName, ipoData, ownerSave) {
         const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
         const ledger = ownerSave.companyLedger || [];
         const totalExpenses = ledger.reduce((s, r) => s + (r.totalExpenses || 0), 0);
+        const ownerUser = ownerSave.username || ownerSave.user || "";
+        console.log("Publishing IPO:", companyName, "owner:", ownerUser);
+        // Initialize shareholders path so reads don't fail
+        const sharSnap = await db.ref("ipo/shareholders/" + key).once("value");
+        if (!sharSnap.exists()) {
+            await db.ref("ipo/shareholders/" + key + "/_meta").set({ companyName, ownerUsername: ownerUser, createdAt: Date.now() });
+        }
         await db.ref("ipo/listed/" + key).set({
             companyName, ipoData,
-            ownerUsername: ownerSave.username || "",
+            ownerUsername: ownerUser,
             netWorth: ownerSave.netWorth || 0,
             ledger: ledger.slice(0, 20), // last 20 drives
             ledgerCount: ledger.length,
@@ -479,37 +492,52 @@ async function fbDistributeDividends(companyName, driveIncome, ownerUsername) {
         const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
         const snap = await db.ref("ipo/shareholders/" + key).once("value");
         const shareholders = snap.val();
-        if (!shareholders) return;
+        if (!shareholders) { console.log("No shareholders for", companyName); return; }
         const dividendPool = Math.round(driveIncome * 0.10);
         if (dividendPool <= 0) return;
-        const entries = Object.entries(shareholders);
+        // Filter out _meta entry and only include real shareholders
+        const entries = Object.entries(shareholders).filter(([k, v]) => k !== "_meta" && v && v.shares > 0 && v.username);
+        if (entries.length === 0) { console.log("No valid shareholders for", companyName, "- shareholders obj:", JSON.stringify(shareholders).slice(0,200)); return; }
         const totalShares = entries.reduce((s, [,v]) => s + (v.shares || 0), 0);
         if (totalShares <= 0) return;
-        for (const [shareholder, data] of entries) {
-            if (shareholder === ownerUsername) continue;
+        console.log("Distributing", fmt(dividendPool), "to", entries.length, "shareholders of", companyName, "total shares:", totalShares);
+        for (const [, data] of entries) {
+            const shareholder = data.username; // original case username for credits
+            if (!shareholder || shareholder.toLowerCase() === ownerUsername.toLowerCase()) continue;
             const pct = (data.shares || 0) / totalShares;
             const dividend = Math.round(dividendPool * pct);
             if (dividend <= 0) continue;
-            await db.ref("p2p/pendingCredits/" + shareholder + "/div_" + key + "_" + Date.now()).set({
+            const creditKey = "div_" + key + "_" + Date.now() + "_" + Math.random().toString(36).slice(2,6);
+            await db.ref("p2p/pendingCredits/" + shareholder + "/" + creditKey).set({
                 amount: dividend, from: companyName, type: "dividend", at: new Date().toISOString()
             });
+            console.log("💰 Dividend sent:", fmt(dividend), "to", shareholder, "(" + (pct*100).toFixed(1) + "% of pool)");
         }
-    } catch(e) {}
+    } catch(e) { console.error("fbDistributeDividends error:", e.message, e); }
 }
 
 async function fbRecordSharePurchase(companyName, buyer, qty, pricePerShare) {
     try {
-        const db = getDB(); if (!db) return;
+        const db = getDB(); if (!db) { console.error("Firebase not ready for share purchase"); return; }
         const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
-        const snap = await db.ref("ipo/shareholders/" + key + "/" + buyer).once("value");
-        const existing = snap.val() || {shares:0,totalInvested:0};
-        await db.ref("ipo/shareholders/" + key + "/" + buyer).set({
-            shares: (existing.shares||0) + qty,
-            totalInvested: (existing.totalInvested||0) + (qty * pricePerShare),
-            lastBought: new Date().toISOString(),
-            username: buyer
-        });
-    } catch(e) {}
+        // Use lowercase buyer key for consistency
+        const buyerKey = buyer.toLowerCase().replace(/[^a-zA-Z0-9]/g, "_");
+        const snap = await db.ref("ipo/shareholders/" + key + "/" + buyerKey).once("value");
+        const existing = snap.val() || { shares: 0, totalInvested: 0 };
+        const newShares = Math.max(0, (existing.shares||0) + qty);
+        const newInvested = Math.max(0, (existing.totalInvested||0) + (qty * pricePerShare));
+        if (newShares === 0) {
+            await db.ref("ipo/shareholders/" + key + "/" + buyerKey).remove();
+        } else {
+            await db.ref("ipo/shareholders/" + key + "/" + buyerKey).set({
+                shares: newShares,
+                totalInvested: newInvested,
+                lastBought: new Date().toISOString(),
+                username: buyer // preserve original case for display
+            });
+        }
+        console.log("✅ Share recorded:", companyName, buyer, "qty:", qty, "shares now:", newShares);
+    } catch(e) { console.error("fbRecordSharePurchase error:", e.message); }
 }
 
 async function fbRecordShareSale(companyName, seller, qty) {
@@ -2830,7 +2858,7 @@ function ShareholdersDashboard({ companyName, ipoData }) {
         ref.on("value", snap => {
             const v = snap.val();
             if (v) {
-                const list = Object.values(v).filter(s => s.shares > 0).sort((a,b) => b.shares - a.shares);
+                const list = Object.values(v).filter(s => s && s.shares > 0 && s.username).sort((a,b) => b.shares - a.shares);
                 setShareholders(list);
                 setTotalRaised(list.reduce((s, sh) => s + (sh.totalInvested||0), 0));
             } else {
@@ -3327,7 +3355,9 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     setWalletRaw(w => +(w - cost).toFixed(2));
                                     // update owned via parent
                                     window.dispatchEvent(new CustomEvent("ml_buy_ipo_share", { detail: { key, qty: +qty2 || 1 } }));
-                                    fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
+                                    fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice)
+                                        .then(()=>console.log("✅ Share recorded in Firebase:", l.companyName, user, +qty2||1))
+                                        .catch(e=>console.error("❌ Share record failed:", e.message));
                                     // Credit owner wallet via Firebase
                                     const db3 = getDB();
                                     if (db3 && l.ownerUsername) {
@@ -3353,7 +3383,6 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                 if (!window._sharePrices) window._sharePrices = {};
                 window._sharePrices[key] = newAvg;
                 showToast(`Bought ${qty2} shares in ${l.companyName} at ${fmt(sharePrice)}/share! You'll earn dividends when they drive.`, T.green);
-                fbRecordSharePurchase(l.companyName, user, +qty2||1, sharePrice).catch(()=>{});
                                 }, style: { fontSize: 11, padding: "5px 8px", background: "rgba(245,200,66,0.1)", border: `1px solid ${T.gold}`, borderRadius: D.brs, color: T.gold, cursor: "pointer", fontWeight: "bold" } }, "Buy"),
                             sharesOwned > 0 && React.createElement("button", { onClick: () => {
                                     const rev = sharePrice * sharesOwned;
@@ -3935,8 +3964,8 @@ function App() {
     const pricesRef = useRef(prices);
     pricesRef.current = prices;
     const stockValue = ALL_STOCKS.reduce((s, st) => s + (portfolio[st.ticker] || 0) * prices[st.ticker], 0);
-    const propIncome = assetPrices ? PROPERTIES.filter(p => owned[p.id] && p.baseIncome > 0).reduce((s, p) => s + assetIncome(p, assetPrices), 0) : 0;
-    const propValue = assetPrices ? PROPERTIES.filter(p => owned[p.id]).reduce((s, p) => s + (assetLiquidate(p, assetPrices) || 0), 0) : 0;
+    const propIncome = assetPrices ? PROPERTIES.filter(p => owned[p.id] && p.baseIncome > 0).reduce((s, p) => s + assetIncome(p, assetPrices) * (owned[p.id] || 1), 0) : 0;
+    const propValue = assetPrices ? PROPERTIES.filter(p => owned[p.id]).reduce((s, p) => s + (assetLiquidate(p, assetPrices) || 0) * (owned[p.id] || 1), 0) : 0;
     const netWorth = wallet + stockValue + propValue;
     const loansOut = loans.reduce((s, l) => s + l.amount, 0);
     const valuationUnlocked = totalDrivingIncome >= VALUATION_UNLOCK;
@@ -4090,16 +4119,26 @@ function App() {
         const ref = db.ref("p2p/pendingCredits/" + user);
         ref.on("value", snap => {
             const credits = snap.val();
-            if (!credits)
-                return;
-            let total = 0;
+            if (!credits) return;
+            let loanTotal = 0, divTotal = 0, shareTotal = 0;
             Object.entries(credits).forEach(([id, credit]) => {
-                total += credit.amount || 0;
+                if (!credit || !credit.amount) return;
+                if (credit.type === "dividend") divTotal += credit.amount;
+                else if (credit.type === "share_purchase") shareTotal += credit.amount;
+                else loanTotal += credit.amount;
                 db.ref("p2p/pendingCredits/" + user + "/" + id).remove();
             });
-            if (total > 0) {
-                setWalletRaw(w => +(w + total).toFixed(2));
-                showToast(`💰 Received ${fmt(total)} in loan repayments!`, T.green);
+            if (loanTotal > 0) {
+                setWalletRaw(w => +(w + loanTotal).toFixed(2));
+                showToast(`💰 Received ${fmt(loanTotal)} in loan repayments!`, T.green);
+            }
+            if (divTotal > 0) {
+                setWalletRaw(w => +(w + divTotal).toFixed(2));
+                showToast(`📈 Dividend received: ${fmt(divTotal)} from your share investments!`, T.gold);
+            }
+            if (shareTotal > 0) {
+                setWalletRaw(w => +(w + shareTotal).toFixed(2));
+                showToast(`🏢 ${fmt(shareTotal)} credited from share sale!`, T.gold);
             }
         });
         return () => ref.off();
@@ -4421,20 +4460,13 @@ function App() {
         setTTP(t => t + taxAmount);
         // Distribute dividends to shareholders if company is listed
         if (isRegistered && ipoData && (ipoData.stage === "Listed" || ipoData.stage === "Blue Chip") && earned > 0) {
-            fbDistributeDividends(companyName, earned, user).catch(() => {});
+            console.log("Distributing dividends for", companyName, "earned:", earned, "owner:", user);
+            fbDistributeDividends(companyName, earned, user).catch(e => console.error("Dividend distribution error:", e));
             // Re-publish updated IPO data with latest financials
             const ownerSave = { username: user, netWorth, totalDrivingIncome: totalDrivingIncome + earned, totalTaxPaid: totalTaxPaid + taxAmount, companyLedger, companyName, isRegistered };
             fbPublishIPO(companyName, ipoData, ownerSave).catch(() => {});
         }
-        // Distribute 10% of drive income as dividends to shareholders
-        if (isRegistered && companyName && earned > 0) {
-            fbDistributeDividends(companyName, earned, user).catch(() => {});
-            // Also update IPO listing with latest financials
-            if (ipoData && (ipoData.stage === "Listed" || ipoData.stage === "Blue Chip")) {
-                const ownerSave = { username: user, netWorth, totalDrivingIncome: totalDrivingIncome + earned, totalTaxPaid: totalTaxPaid + taxAmount, companyLedger, companyName, isRegistered };
-                fbPublishIPO(companyName, ipoData, ownerSave).catch(() => {});
-            }
-        }
+        // (dividend distribution handled above — no duplicate)
         // Save full record to company ledger
         if (isRegistered && expenseBreakdown) {
             const record = {
@@ -4508,16 +4540,19 @@ function App() {
         if (wallet < currentCost) { showToast("Not enough cash!", T.red); return; }
         const currentQty = owned[p.id] || 0;
         const newQty = currentQty + 1;
-        // Calculate new average purchase price
-        const oldAvg = purchasePrices[p.id] || 0;
-        const newAvg = currentQty === 0 ? currentCost : Math.round((oldAvg * currentQty + currentCost) / newQty);
+        // Track individual purchase lots for accurate P&L
+        const existing = purchasePrices[p.id] || { lots: [], avgCost: 0, totalCost: 0, totalQty: 0 };
+        const lots = [...(existing.lots || []), { qty: 1, price: currentCost, date: new Date().toLocaleDateString() }];
+        const totalCost = (existing.totalCost || 0) + currentCost;
+        const totalQty = (existing.totalQty || 0) + 1;
+        const avgCost = Math.round(totalCost / totalQty);
         setOwned(o => ({ ...o, [p.id]: newQty }));
-        setPurchasePrices(pp => ({ ...pp, [p.id]: newAvg }));
+        setPurchasePrices(pp => ({ ...pp, [p.id]: { lots, avgCost, totalCost, totalQty } }));
         setWalletRaw(w => +(w - currentCost).toFixed(2));
         if (currentQty === 0) {
             showToast(`Purchased ${p.name} for ${fmt(currentCost)}!`, T.green);
         } else {
-            showToast(`Bought more ${p.name}! Now own ${newQty} units. Avg cost: ${fmt(newAvg)}`, T.cyan);
+            showToast(`Bought more ${p.name} at ${fmt(currentCost)}! Avg cost: ${fmt(avgCost)} across ${newQty} units`, T.cyan);
         }
     }
     function applyNonDriveTax(gain) {
@@ -4533,14 +4568,30 @@ function App() {
         return;
         const currentQty = owned[p.id] || 0;
         const val = p.id === "crypto" ? Math.round((assetLiquidate(p, assetPrices) || p.baseCost) * (0.85 + Math.random() * 0.4)) : assetLiquidate(p, assetPrices) || p.baseCost;
-        const avgCost = purchasePrices[p.id] || p.baseCost || 0;
-        const gain = Math.max(0, val - avgCost);
-        const tax = applyNonDriveTax(gain);
+        // Get cost of the oldest lot (FIFO — first in, first out)
+        const priceData = purchasePrices[p.id];
+        const lots = priceData && priceData.lots ? [...priceData.lots] : [];
+        const oldestLot = lots.length > 0 ? lots[0] : null;
+        const costOfThisUnit = oldestLot ? oldestLot.price : (priceData && priceData.avgCost) || (typeof priceData === "number" ? priceData : 0) || p.baseCost || 0;
+        const gain = val - costOfThisUnit; // can be negative (loss)
+        const tax = gain > 0 ? applyNonDriveTax(gain) : 0;
+        const netProfit = gain - tax;
         const newQty = Math.max(0, currentQty - 1);
+        // Remove the sold lot
+        if (lots.length > 0) lots.shift();
+        const remaining = lots.length > 0 ? {
+            lots,
+            totalQty: lots.length,
+            totalCost: lots.reduce((s, l) => s + l.price, 0),
+            avgCost: Math.round(lots.reduce((s, l) => s + l.price, 0) / lots.length)
+        } : null;
         setOwned(o => ({ ...o, [p.id]: newQty }));
-        if (newQty === 0) setPurchasePrices(pp => ({ ...pp, [p.id]: 0 }));
+        setPurchasePrices(pp => ({ ...pp, [p.id]: remaining }));
         setWalletRaw(w => +(w + val - tax).toFixed(2));
-        showToast(newQty > 0 ? `Sold 1 ${p.name} for ${fmt(val)} · ${newQty} units left · Tax: ${fmt(tax)}` : `Sold last ${p.name} for ${fmt(val)} · Tax: ${fmt(tax)}`, T.gold);
+        const msg = gain > 0
+            ? `✅ Sold ${p.name} for ${fmt(val)} · Bought at ${fmt(costOfThisUnit)} · Profit: ${fmt(netProfit)} after tax`
+            : `📉 Sold ${p.name} for ${fmt(val)} · Bought at ${fmt(costOfThisUnit)} · Loss: ${fmt(Math.abs(gain))}`;
+        showToast(msg, gain > 0 ? T.green : T.orange);
     }
     function lend(f) {
         const amt = parseInt(lendAmt[f.id] || 0);
@@ -4873,30 +4924,46 @@ function App() {
                                 isOwned && React.createElement("span", { style: { fontSize: 9, padding: "1px 5px", borderRadius: 20, background: "rgba(0,255,136,0.1)", color: T.green, border: `1px solid ${T.green}55` } }, `${owned[p.id]}x Owned`)),
                             React.createElement("div", { style: { fontSize: 10, color: T.muted, marginTop: 1 } }, p.desc),
                             React.createElement("div", { style: { fontSize: 10, color: T.green, marginTop: 1 } },
-                                assetIncome(p, assetPrices || {}) > 0 ? `+${fmt(assetIncome(p, assetPrices || {}))}/day` : "No income",
+                                assetIncome(p, assetPrices || {}) > 0 ? `+${fmt(assetIncome(p, assetPrices || {}) * (owned[p.id]||1))}/day${(owned[p.id]||1)>1?" ("+owned[p.id]+"×)":""}` : "No income",
                                 " \u00B7 Current: ",
                                 fmt((assetPrices && assetPrices[p.id]) || p.baseCost)),
                             isOwned && purchasePrices[p.id] && (() => {
-                                const bought = purchasePrices[p.id]; // average cost per unit
+                                const priceData = purchasePrices[p.id];
                                 const qty = owned[p.id] || 1;
                                 const current = (assetPrices && assetPrices[p.id]) || p.baseCost;
-                                const gain = current - bought;
-                                const gainPct = ((gain / bought) * 100).toFixed(1);
-                                const isProfit = gain >= 0;
-                                const totalValue = current * qty;
-                                const totalCost = bought * qty;
-                                const signal = gain / bought >= 0.15 ? "🟢 Good time to sell" : gain / bought <= -0.10 ? "🔴 Wait — selling at a loss" : gain / bought >= 0.05 ? "🟡 Small profit — up to you" : "⚪ Near purchase price";
-                                return (React.createElement("div", { style: { marginTop: 3 } },
-                                    React.createElement("span", { style: { fontSize: 10, color: T.muted } },
-                                        "Bought: ",
-                                        React.createElement("span", { style: { fontFamily: "monospace", color: T.text } }, fmt(bought))),
-                                    React.createElement("span", { style: { fontSize: 10, marginLeft: 8, color: isProfit ? T.green : T.red, fontFamily: "monospace" } },
-                                        isProfit ? "+" : "",
-                                        fmt(gain),
-                                        " (",
-                                        gainPct,
-                                        "%)"),
-                                    React.createElement("div", { style: { fontSize: 10, marginTop: 2 } }, signal)));
+                                // Support both old (number) and new (object with lots) format
+                                const avgCost = priceData && priceData.avgCost ? priceData.avgCost : (typeof priceData === "number" ? priceData : p.baseCost);
+                                const lots = priceData && priceData.lots ? priceData.lots : [];
+                                const totalCostBasis = priceData && priceData.totalCost ? priceData.totalCost : avgCost * qty;
+                                const totalCurrentValue = current * qty;
+                                const totalGain = totalCurrentValue - totalCostBasis;
+                                const totalGainPct = totalCostBasis > 0 ? ((totalGain / totalCostBasis) * 100).toFixed(1) : "0.0";
+                                const isProfit = totalGain >= 0;
+                                const ratio = totalCostBasis > 0 ? totalGain / totalCostBasis : 0;
+                                const signal = ratio >= 0.15 ? "🟢 Good time to sell" : ratio <= -0.10 ? "🔴 Selling at a loss" : ratio >= 0.05 ? "🟡 Small profit" : "⚪ Near purchase price";
+                                return React.createElement("div", { style: { marginTop: 4 } },
+                                    // Total summary
+                                    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 } },
+                                        React.createElement("span", { style: { color: T.muted } }, "Cost basis: ",
+                                            React.createElement("span", { style: { fontFamily: "monospace", color: T.text } }, fmt(totalCostBasis))
+                                        ),
+                                        React.createElement("span", { style: { fontFamily: "monospace", fontWeight: "bold", color: isProfit ? T.green : T.red } },
+                                            isProfit ? "+" : "", fmt(totalGain), " (", totalGainPct, "%)")
+                                    ),
+                                    // Individual lots — show each purchase price
+                                    lots.length > 1 && React.createElement("div", { style: { background: T.surface, borderRadius: 4, padding: "4px 6px", marginBottom: 3 } },
+                                        lots.map((lot, i) => {
+                                            const lotGain = current - lot.price;
+                                            const lotPct = ((lotGain / lot.price) * 100).toFixed(1);
+                                            return React.createElement("div", { key: i, style: { fontSize: 9, display: "flex", justifyContent: "space-between", color: T.muted, marginBottom: 1 } },
+                                                React.createElement("span", null, "Lot ", i+1, ": ", fmt(lot.price), " · ", lot.date),
+                                                React.createElement("span", { style: { color: lotGain >= 0 ? T.green : T.red, fontFamily: "monospace" } },
+                                                    lotGain >= 0 ? "+" : "", fmt(lotGain), " (", lotPct, "%)")
+                                            );
+                                        })
+                                    ),
+                                    React.createElement("div", { style: { fontSize: 10, marginTop: 1 } }, signal)
+                                );
                             })()),
                         React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } },
                             React.createElement("div", { style: { fontSize: 12, fontWeight: "bold", fontFamily: "monospace", color: T.text, marginBottom: 5 } }, fmt((assetPrices && assetPrices[p.id]) || p.baseCost)),
