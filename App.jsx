@@ -2738,47 +2738,24 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
     const [status, setStatus] = useState("loading"); // loading | live | offline
     // Write current player score + subscribe to live updates
     useEffect(() => {
-        if (!fbConfigured()) {
-            // Firebase not configured yet — fall back to localStorage so game still works
-            setStatus("offline");
-            let lb = [];
-            try {
-                const r = localStorage.getItem(LB_KEY);
-                lb = r ? JSON.parse(r) : [];
-            }
-            catch { }
-            lb = lb.filter(e => e.username !== currentUser);
-            lb.push({ username: currentUser, netWorth: Math.round(netWorth), drivingIncome: Math.round(totalDrivingIncome), taxPaid: Math.round(totalTaxPaid), company: companyName || "Unregistered", updatedAt: Date.now() });
-            // Deduplicate before sorting
-            const seenLocal = new Set();
-            const dedupedLB = lb.filter(p => { if (!p.username)
-                return false; const k = p.username.toLowerCase(); if (seenLocal.has(k))
-                return false; seenLocal.add(k); return true; });
-            lb.length = 0;
-            dedupedLB.forEach(p => lb.push(p));
-            lb.sort((a, b) => b.netWorth - a.netWorth);
-            lb = lb.slice(0, 100);
-            try {
-                localStorage.setItem(LB_KEY, JSON.stringify(lb));
-            }
-            catch { }
-            setBoard(lb);
-            return;
-        }
-        // Use async retry — Firebase may not be ready immediately on mount
+        // Always try Firebase first — it IS configured and working
         let db = getDB();
         if (!db) {
-            // Retry after 3 seconds — give Firebase time to initialize
-            const retryTimer = setTimeout(async () => {
-                db = await getDBAsync();
+            // Retry every second for up to 10 seconds
+            let attempts = 0;
+            const retryTimer = setInterval(() => {
+                attempts++;
+                db = getDB();
                 if (db) {
+                    clearInterval(retryTimer);
                     window.dispatchEvent(new Event("ml_firebase_ready"));
-                } else {
+                } else if (attempts >= 10) {
+                    clearInterval(retryTimer);
                     setStatus("offline");
                 }
-            }, 3000);
+            }, 1000);
             setStatus("loading");
-            return () => clearTimeout(retryTimer);
+            return () => clearInterval(retryTimer);
         }
         // Write this player's score
         // SECURITY: weekly income is server-incremented, not client-reported
