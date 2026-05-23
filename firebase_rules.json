@@ -1,0 +1,50 @@
+{
+  "rules": {
+    "accounts": {
+      "$username": {
+        ".read": true,
+        ".write": "auth == null || $username == auth.token.name || !data.exists()"
+      }
+    },
+    "leaderboard": {
+      "$username": {
+        ".read": true,
+        ".write": true,
+        "netWorth": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 999999999999"
+        },
+        "weeklyDriveIncome": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000000"
+        }
+      }
+    },
+    "p2p": {
+      ".read": true,
+      ".write": true
+    },
+    "ipo": {
+      ".read": true,
+      ".write": true
+    },
+    "market": {
+      ".read": true,
+      ".write": true
+    },
+    "rewards": {
+      ".read": true,
+      ".write": true
+    },
+    "deviceAccounts": {
+      ".read": false,
+      ".write": true
+    },
+    "challenges": {
+      ".read": true,
+      ".write": true
+    },
+    "bailouts": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}

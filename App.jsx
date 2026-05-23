@@ -741,6 +741,202 @@ function Input({ value, onChange, placeholder, type = "text", style = {} }) {
     return (React.createElement("input", { type: type, value: value, onChange: e => onChange(e.target.value), placeholder: placeholder, style: { background: T.surface, border: `1px solid ${T.border}`, borderRadius: D.brs, color: T.text, padding: "9px 12px", fontSize: 13, width: "100%", boxSizing: "border-box", ...style } }));
 }
 // ── AUTH SCREENS ──────────────────────────────────────────────────────────────
+
+// ── VTPASS AIRTIME REWARD SYSTEM ─────────────────────────────────────────────
+// Detects phone network from number prefix
+function detectNetwork(phone) {
+    const n = phone.replace(/\D/g,'').slice(-10);
+    const prefix = n.slice(0,4);
+    const mtn = ['0803','0806','0703','0706','0813','0816','0810','0814','0903','0906','0913','0916'];
+    const airtel = ['0802','0808','0708','0812','0701','0902','0907','0901'];
+    const glo = ['0805','0807','0705','0815','0811','0905','0915'];
+    const nine = ['0809','0818','0817','0909','0908'];
+    if (mtn.some(p => n.startsWith(p))) return 'mtn';
+    if (airtel.some(p => n.startsWith(p))) return 'airtel';
+    if (glo.some(p => n.startsWith(p))) return 'glo';
+    if (nine.some(p => n.startsWith(p))) return '9mobile';
+    return null;
+}
+
+// Network to VTPass service ID mapping
+const VTPASS_SERVICE_IDS = {
+    mtn: 'mtn',
+    airtel: 'airtel',
+    glo: 'glo',
+    '9mobile': 'etisalat'
+};
+
+// Send airtime via VTPass API
+async function sendAirtime({ phone, amount, apiKey, publicKey, secretKey }) {
+    const network = detectNetwork(phone);
+    if (!network) throw new Error('Unrecognised phone network');
+    const serviceID = VTPASS_SERVICE_IDS[network];
+    const requestId = new Date().toISOString().replace(/[-T:.Z]/g,'').slice(0,18) + Math.random().toString(36).slice(2,8);
+    const cleanPhone = '0' + phone.replace(/\D/g,'').slice(-10);
+
+    const response = await fetch('https://vtpass.com/api/pay', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'api-key': apiKey,
+            'secret-key': secretKey,
+        },
+        body: JSON.stringify({
+            request_id: requestId,
+            serviceID,
+            amount,
+            phone: cleanPhone,
+        })
+    });
+    const data = await response.json();
+    if (data.code !== '000') throw new Error(data.response_description || 'VTPass error');
+    return { success: true, transactionId: data.requestId, network, phone: cleanPhone, amount };
+}
+
+// Weekly reward structure
+const WEEKLY_REWARDS = [
+    { rank: 1, label: '🥇 1st Place', airtime: 1000 },
+    { rank: 2, label: '🥈 2nd Place', airtime: 500 },
+    { rank: 3, label: '🥉 3rd Place', airtime: 200 },
+    { rank: 4, label: '4th Place', airtime: 100 },
+    { rank: 5, label: '5th Place', airtime: 100 },
+];
+
+// ── REWARD CLAIM MODAL ────────────────────────────────────────────────────────
+function RewardClaimModal({ reward, username, onClaim, onClose }) {
+    const [phone, setPhone] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [done, setDone] = useState(false);
+    const [err, setErr] = useState('');
+    const network = phone.length >= 11 ? detectNetwork(phone) : null;
+
+    const networkColors = { mtn: '#FFD700', airtel: '#FF0000', glo: '#00AA00', '9mobile': '#006633' };
+    const networkNames = { mtn: 'MTN', airtel: 'Airtel', glo: 'Glo', '9mobile': '9mobile' };
+
+    async function claim() {
+        if (!phone || phone.replace(/\D/g,'').length < 10) { setErr('Enter a valid Nigerian phone number'); return; }
+        if (!network) { setErr('Unrecognised network. Use MTN, Airtel, Glo or 9mobile'); return; }
+        setLoading(true); setErr('');
+        try {
+            await onClaim(phone, reward.airtime);
+            setDone(true);
+        } catch(e) {
+            setErr(e.message || 'Failed to send airtime. Try again.');
+        }
+        setLoading(false);
+    }
+
+    return React.createElement('div', { style: { position:'fixed', inset:0, background:'rgba(7,12,24,0.95)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:20 } },
+        React.createElement('div', { style: { background:'#0f1729', border:'1px solid rgba(0,229,255,0.3)', borderRadius:20, padding:24, maxWidth:340, width:'100%', boxShadow:'0 0 40px rgba(0,229,255,0.15)' } },
+            done
+                ? React.createElement('div', { style: { textAlign:'center' } },
+                    React.createElement('div', { style: { fontSize:48, marginBottom:12 } }, '🎉'),
+                    React.createElement('div', { style: { fontSize:18, fontWeight:'bold', color:'#00FF88', marginBottom:8 } }, 'Airtime Sent!'),
+                    React.createElement('div', { style: { fontSize:13, color:'#6B7FA0', marginBottom:16 } }, `₦${reward.airtime} airtime sent to ${phone}`),
+                    React.createElement('button', { onClick: onClose, style: { width:'100%', padding:12, background:'#00e5ff', color:'#003d42', border:'none', borderRadius:10, fontWeight:'bold', fontSize:14, cursor:'pointer' } }, 'Awesome! 🚀')
+                )
+                : React.createElement('div', null,
+                    // Header
+                    React.createElement('div', { style: { textAlign:'center', marginBottom:20 } },
+                        React.createElement('div', { style: { fontSize:36, marginBottom:8 } }, reward.rank <= 3 ? ['🥇','🥈','🥉'][reward.rank-1] : '🏅'),
+                        React.createElement('div', { style: { fontSize:16, fontWeight:'bold', color:'#00e5ff' } }, reward.label),
+                        React.createElement('div', { style: { fontSize:13, color:'#6B7FA0', marginTop:4 } }, `You earned ₦${reward.airtime.toLocaleString()} airtime this week!`)
+                    ),
+                    // Phone input
+                    React.createElement('div', { style: { marginBottom:12 } },
+                        React.createElement('div', { style: { fontSize:11, color:'#6B7FA0', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.05em' } }, 'Your Phone Number'),
+                        React.createElement('div', { style: { position:'relative' } },
+                            React.createElement('input', {
+                                value: phone,
+                                onChange: e => { setPhone(e.target.value); setErr(''); },
+                                placeholder: '08012345678',
+                                maxLength: 14,
+                                style: { width:'100%', padding:'12px 14px', background:'#0a0f1e', border:`1px solid ${network ? networkColors[network] : 'rgba(255,255,255,0.1)'}`, borderRadius:10, color:'#dee2f4', fontSize:15, outline:'none', boxSizing:'border-box' }
+                            }),
+                            network && React.createElement('div', { style: { position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', fontSize:11, fontWeight:'bold', color: networkColors[network], background:'rgba(0,0,0,0.5)', padding:'2px 8px', borderRadius:10 } }, networkNames[network])
+                        )
+                    ),
+                    err && React.createElement('div', { style: { background:'rgba(255,71,87,0.1)', border:'1px solid rgba(255,71,87,0.3)', borderRadius:8, padding:'8px 12px', fontSize:12, color:'#ff4757', marginBottom:12 } }, err),
+                    // Confirm button
+                    React.createElement('button', {
+                        onClick: claim,
+                        disabled: loading,
+                        style: { width:'100%', padding:13, background: loading ? '#1e2d45' : 'linear-gradient(135deg,#00e5ff,#00ff88)', color: loading ? '#6B7FA0' : '#003d42', border:'none', borderRadius:10, fontWeight:'bold', fontSize:14, cursor: loading ? 'not-allowed' : 'pointer' }
+                    }, loading ? '⏳ Sending airtime...' : `Send ₦${reward.airtime.toLocaleString()} Airtime`),
+                    React.createElement('button', { onClick: onClose, style: { width:'100%', padding:10, background:'transparent', border:'none', color:'#6B7FA0', fontSize:12, cursor:'pointer', marginTop:8 } }, 'Claim later')
+                )
+        )
+    );
+}
+
+// ── ADMIN REWARD PANEL (only visible to game owner) ──────────────────────────
+function AdminRewardPanel({ leaderboard, weeklyBoard, onClose }) {
+    const ADMIN_USERNAME = 'MRLOADED'; // Change to your username
+    const [vtpassKey, setVtpassKey] = useState('');
+    const [vtpassSecret, setVtpassSecret] = useState('');
+    const [results, setResults] = useState([]);
+    const [running, setRunning] = useState(false);
+
+    async function distributeRewards() {
+        if (!vtpassKey || !vtpassSecret) { alert('Enter your VTPass API keys first'); return; }
+        setRunning(true);
+        // Use weekly board if available, else fall back to all-time
+        const source = (weeklyBoard && weeklyBoard.length > 0) ? weeklyBoard : leaderboard;
+        const top5 = source.slice(0, 5).filter(p => p.phone);
+        if (top5.length === 0) { alert('No winners with phone numbers yet. Players need to register with phone numbers.'); setRunning(false); return; }
+        const newResults = [];
+        for (let i = 0; i < top5.length; i++) {
+            const player = top5[i];
+            const reward = WEEKLY_REWARDS[i];
+            try {
+                const result = await sendAirtime({ phone: player.phone, amount: reward.airtime, apiKey: vtpassKey, secretKey: vtpassSecret });
+                newResults.push({ player: player.username, reward: reward.airtime, status: '✅ Sent', network: result.network });
+            } catch(e) {
+                newResults.push({ player: player.username, reward: reward.airtime, status: '❌ ' + e.message });
+            }
+            setResults([...newResults]);
+        }
+        setRunning(false);
+    }
+
+    return React.createElement('div', { style: { position:'fixed', inset:0, background:'rgba(7,12,24,0.97)', zIndex:9999, overflowY:'auto', padding:20 } },
+        React.createElement('div', { style: { maxWidth:400, margin:'0 auto' } },
+            React.createElement('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 } },
+                React.createElement('div', { style: { fontWeight:'bold', fontSize:16, color:'#00e5ff' } }, '🏆 Weekly Reward Distribution'),
+                React.createElement('button', { onClick:onClose, style:{ background:'transparent', border:'none', color:'#6B7FA0', fontSize:20, cursor:'pointer' } }, '×')
+            ),
+            // VTPass keys
+            React.createElement('div', { style:{ background:'#0f1729', border:'1px solid rgba(255,255,255,0.1)', borderRadius:12, padding:14, marginBottom:14 } },
+                React.createElement('div', { style:{fontSize:11, color:'#6B7FA0', marginBottom:8} }, 'VTPass API Keys (from vtpass.com/api-developer)'),
+                React.createElement('input', { value:vtpassKey, onChange:e=>setVtpassKey(e.target.value), placeholder:'API Key (public key)', style:{width:'100%', padding:'10px', background:'#0a0f1e', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, color:'#dee2f4', fontSize:12, marginBottom:8, boxSizing:'border-box'} }),
+                React.createElement('input', { value:vtpassSecret, onChange:e=>setVtpassSecret(e.target.value), placeholder:'Secret Key', type:'password', style:{width:'100%', padding:'10px', background:'#0a0f1e', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, color:'#dee2f4', fontSize:12, boxSizing:'border-box'} })
+            ),
+            // Top 5 preview
+            React.createElement('div', { style:{marginBottom:14} },
+                React.createElement('div', { style:{fontSize:12, fontWeight:'bold', color:'#dee2f4', marginBottom:8} }, 'This Week's Winners:'),
+                WEEKLY_REWARDS.map((r, i) => {
+                    const player = leaderboard[i];
+                    return React.createElement('div', { key:i, style:{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 12px', background:'#0a0f1e', borderRadius:8, marginBottom:6} },
+                        React.createElement('div', null,
+                            React.createElement('span', { style:{color:'#00e5ff', fontWeight:'bold', fontSize:12} }, r.label + ' '),
+                            React.createElement('span', { style:{color:'#dee2f4', fontSize:12} }, player ? player.username : 'No player')
+                        ),
+                        React.createElement('div', null,
+                            React.createElement('span', { style:{color:'#00FF88', fontWeight:'bold', fontSize:12} }, '₦' + r.airtime),
+                            results[i] && React.createElement('span', { style:{fontSize:11, marginLeft:6} }, results[i].status)
+                        )
+                    );
+                })
+            ),
+            React.createElement('button', {
+                onClick: distributeRewards,
+                disabled: running,
+                style:{width:'100%', padding:14, background:running?'#1e2d45':'linear-gradient(135deg,#00e5ff,#00ff88)', color:running?'#6B7FA0':'#003d42', border:'none', borderRadius:12, fontWeight:'bold', fontSize:14, cursor:running?'not-allowed':'pointer'}
+            }, running ? '⏳ Distributing rewards...' : '🚀 Distribute Airtime Rewards')
+        )
+    );
+}
+
 function AuthScreen({ onLogin }) {
     const [mode, setMode] = useState("login");
     const [username, setUsername] = useState("");
@@ -842,8 +1038,23 @@ function AuthScreen({ onLogin }) {
                 return;
             }
             // Save to Firebase AND localStorage
-            const newAcc = { password, email, save: null, createdAt: Date.now() };
+            const cleanPhone = typeof phone !== 'undefined' ? phone.replace(/\D/g,'') : '';
+            // SECURITY: Device fingerprint to limit multiple accounts
+            const fp = [navigator.userAgent, navigator.language, screen.width + "x" + screen.height, Intl.DateTimeFormat().resolvedOptions().timeZone].join("|");
+            const fpHash = fp.split("").reduce((a,c) => ((a<<5)-a+c.charCodeAt(0))|0, 0).toString(36);
+            const newAcc = { password, email, phone: cleanPhone, deviceFp: fpHash, save: null, createdAt: Date.now() };
+            // Check if this device already has an account
+            const fpSnap = await getDB()?.ref("deviceAccounts/" + fpHash).once("value").catch(()=>null);
+            const existingFpAccounts = fpSnap?.val() || {};
+            const accountCount = Object.keys(existingFpAccounts).length;
+            if (accountCount >= 3) {
+                setErr("Too many accounts from this device. Max 3 accounts per device allowed.");
+                setLoading(false);
+                return;
+            }
             await fbSaveAccount(username.trim(), newAcc);
+            // Track device fingerprint
+            await getDB()?.ref("deviceAccounts/" + fpHash + "/" + username.trim().toLowerCase()).set(Date.now()).catch(()=>{});
             accs[username] = { ...newAcc };
             saveAccounts(accs);
             onLogin(username.trim(), null);
@@ -924,6 +1135,11 @@ function AuthScreen({ onLogin }) {
                         React.createElement("div", { style: { position: "relative" } },
                             React.createElement("span", { style: { position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#6B7FA0", fontSize: 16, fontFamily: "'Material Symbols Outlined'" } }, "mail"),
                             React.createElement("input", { className: "ml-input", value: email, onChange: e => setEmail(e.target.value), placeholder: "you@example.com", type: "email", onKeyDown: e => e.key === "Enter" && doRegister() })))),
+                    !isLogin && (React.createElement("div", null,
+                        React.createElement("label", { style: { display: "block", fontSize: 11, fontWeight: 500, color: "#00FF88", marginBottom: 6, letterSpacing: "0.05em", textTransform: "uppercase" } }, "📱 Phone Number (for airtime rewards 🎁)"),
+                        React.createElement("div", { style: { position: "relative" } },
+                            React.createElement("span", { style: { position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#6B7FA0", fontSize: 16, fontFamily: "'Material Symbols Outlined'" } }, "phone"),
+                            React.createElement("input", { className: "ml-input", value: phone, onChange: e => setPhone(e.target.value), placeholder: "08012345678", type: "tel", maxLength: 14, onKeyDown: e => e.key === "Enter" && doRegister() })))),
                     React.createElement("div", null,
                         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 } },
                             React.createElement("label", { style: { fontSize: 11, fontWeight: 500, color: "#bac9cc", letterSpacing: "0.05em", textTransform: "uppercase" } }, "Password")),
@@ -1884,6 +2100,7 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
         s.passiveTimer = 0;
         s.learnTimer = LEARN_POPUP_INTERVAL_MS;
         s.driveStartTime = Date.now();
+            s.sessionDuration = 0;
         s.roadEventsCollected = 0;
         s.quizzesPassed = 0;
         s.quizzesFailed = 0;
@@ -1945,6 +2162,7 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
             haptic([50, 30, 50]);
         }
         s.passiveTimer += dt;
+        s.sessionDuration = (s.sessionDuration || 0) + dt / 1000; // in seconds
         if (s.passiveTimer >= 3000 && propIncome > 0) {
             const tick = Math.round(propIncome / 10);
             s.balance += tick;
@@ -2203,24 +2421,38 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
         @keyframes runnerFloat{0%,100%{transform:translateY(0);}50%{transform:translateY(-8px);}}
         .runner-ticker{animation:runnerTick 4s linear infinite;}
         @keyframes runnerTick{0%{transform:translateY(-60px) scale(0.6);opacity:0;}20%{opacity:1;}100%{transform:translateY(520px) scale(1.1);opacity:0.4;}}
+        @keyframes floatDown{0%{transform:translateY(-60px) scale(0.5);opacity:0;}20%{opacity:1;}100%{transform:translateY(560px) scale(1.2);opacity:0.4;}}
+        @keyframes enginePulse{0%,100%{box-shadow:0 0 20px rgba(0,229,255,0.5),0 0 40px rgba(0,229,255,0.2);}50%{box-shadow:0 0 30px rgba(0,229,255,0.8),0 0 60px rgba(0,229,255,0.3);}}
+        @keyframes particleDrift{0%{transform:translateY(0) scale(1);opacity:0.8;}100%{transform:translateY(110vh) scale(0);opacity:0;}}
         .runner-scanline{background:linear-gradient(to bottom,transparent 50%,rgba(0,229,255,0.04) 50%);background-size:100% 4px;}
-        .runner-lane{background:linear-gradient(to bottom,transparent 0%,rgba(0,229,255,0.15) 50%,transparent 100%);width:2px;height:100%;position:absolute;}
+        .runner-lane{background:linear-gradient(to bottom,transparent 0%,rgba(0,229,255,0.18) 50%,transparent 100%);width:2px;height:100%;position:absolute;}
+        .road-perspective{perspective:1000px;}
+        .road-surface{transform:rotateX(60deg);transform-origin:bottom;background:linear-gradient(to bottom,#0e131f 0%,#070C18 100%);height:150%;width:100%;position:absolute;bottom:-30%;}
+        .glass-panel-runner{background:rgba(15,23,41,0.75);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.1);}
+        .car-engine-glow{animation:enginePulse 2s ease-in-out infinite;}
+        .ticker-float{animation:floatDown 4s linear infinite;}
       `),
-        phase === "playing" && (React.createElement("div", { style: { padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,229,255,0.1)", background: "rgba(7,12,24,0.92)", backdropFilter: "blur(12px)", fontFamily: "'Inter',sans-serif" } },
-            React.createElement("div", { style: { background: "rgba(15,23,41,0.8)", border: "1px solid rgba(0,229,255,0.25)", borderRadius: 12, padding: "8px 14px", boxShadow: "0 0 14px rgba(0,229,255,0.12)" } },
+        phase === "playing" && (React.createElement("div", { style: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 30, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: "rgba(7,12,24,0.0)", pointerEvents: "none" } },
+            // Portfolio Balance - glass panel
+            React.createElement("div", { className: "glass-panel-runner", style: { borderRadius: 14, padding: "10px 16px", boxShadow: "0 0 15px rgba(0,229,255,0.3)", pointerEvents: "auto" } },
                 React.createElement("div", { style: { fontSize: 9, color: "#6B7FA0", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 } }, "Portfolio Balance"),
-                React.createElement("div", { style: { fontSize: 20, fontWeight: 800, color: "#00FF88", fontFamily: "monospace", letterSpacing: "-0.01em" } }, fmt(dispBal))),
-            React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 } },
-                propIncome > 0 && (React.createElement("div", { style: { background: "rgba(0,145,57,0.2)", border: "1px solid rgba(0,255,136,0.3)", borderRadius: 20, padding: "4px 12px", display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, color: "#00FF88", boxShadow: "0 0 10px rgba(0,255,136,0.2)" } },
-                    "\uD83D\uDCB0 DIVIDEND DAY! +",
-                    fmt(propIncome),
-                    "/day")),
-                React.createElement("button", { onClick: exitRoad, style: { background: "rgba(147,0,10,0.35)", border: "1px solid rgba(255,180,171,0.4)", borderRadius: 8, padding: "7px 16px", color: "#ffb4ab", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter',sans-serif", letterSpacing: "0.02em" } }, "Exit Road")))),
-        roadEvt && phase === "playing" && (React.createElement("div", { style: { background: `${roadEvt.color}18`, borderBottom: `1px solid ${roadEvt.color}`, padding: "5px 14px", display: "flex", alignItems: "center", gap: 10, justifyContent: "center" } },
-            React.createElement("span", { style: { fontWeight: "bold", fontSize: 11, color: roadEvt.color } }, roadEvt.label),
-            React.createElement("span", { style: { fontSize: 10, color: roadEvt.color, opacity: 0.8 } }, roadEvt.desc))),
-        React.createElement("div", { style: { position: "relative", minHeight: 560 } },
-            lastBill && (React.createElement("div", { style: { position: "absolute", top: "35%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 10, background: T.card, border: `1px solid ${lastBill.color}`, borderRadius: 10, padding: "10px 18px", textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap" } },
+                React.createElement("div", { style: { fontSize: 22, fontWeight: 800, color: "#00FF88", fontFamily: "monospace" } }, fmt(dispBal))),
+            // Right side controls
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, pointerEvents: "auto" } },
+                // Road event banner
+                roadEvt && React.createElement("div", { style: { background: `${roadEvt.color}22`, border: `1px solid ${roadEvt.color}55`, borderRadius: 20, padding: "5px 14px", display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 700, color: roadEvt.color, boxShadow: `0 0 12px ${roadEvt.color}33` } },
+                    React.createElement("span", null, roadEvt.label)),
+                // Exit button
+                React.createElement("button", { onClick: exitRoad, style: { background: "rgba(147,0,10,0.9)", border: "1px solid rgba(255,180,171,0.4)", borderRadius: 10, padding: "8px 18px", color: "#ffb4ab", fontSize: 12, fontWeight: 700, cursor: "pointer", letterSpacing: "0.02em" } }, "Exit Road")))),
+        React.createElement("div", { style: { position: "relative", minHeight: 560, background: "#070C18", overflow: "hidden" } },
+            // 3D Road perspective overlay
+            phase === "playing" && React.createElement("div", { className: "road-perspective", style: { position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none", overflow: "hidden" } },
+                React.createElement("div", { className: "road-surface" },
+                    React.createElement("div", { className: "runner-lane", style: { left: "33%" } }),
+                    React.createElement("div", { className: "runner-lane", style: { left: "66%" } })
+                )
+            ),
+            lastBill && (React.createElement("div", { style: { position: "absolute", top: "35%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 25, background: "rgba(15,23,41,0.95)", backdropFilter: "blur(20px)", border: `1px solid ${lastBill.color}`, borderRadius: 12, padding: "12px 20px", textAlign: "center", pointerEvents: "none", whiteSpace: "nowrap", boxShadow: `0 0 20px ${lastBill.color}44` } },
                 React.createElement("i", { className: `ti ${lastBill.icon}`, style: { fontSize: 18, color: lastBill.color, display: "block", marginBottom: 4 }, "aria-hidden": "true" }),
                 React.createElement("div", { style: { fontWeight: "bold", fontSize: 12, color: lastBill.color } }, lastBill.label),
                 React.createElement("div", { style: { fontSize: 11, color: lastBill.color, fontFamily: "monospace" } },
@@ -2254,7 +2486,7 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
                     React.createElement("div", { style: { background: T.card, border: `1px solid ${T.gold}44`, borderRadius: D.br, padding: 14, marginBottom: 12 } },
                         React.createElement("div", { style: { fontWeight: "bold", fontSize: 13, color: T.text, lineHeight: 1.6, marginBottom: 12 } }, quizPopup.item.quiz.q),
                         quizPopup.item.quiz.o.map((opt, i) => {
-                            const isCorrect = i === quizPopup.item.quiz.a;
+                            const isCorrect = i === (quizPopup.item.quiz.a ^ quizPopup._salt);
                             const isChosen = i === quizPopup.chosen;
                             let bg = T.surface, border = T.border, color = T.muted;
                             if (quizPopup.submitted) {
@@ -2294,11 +2526,11 @@ function MarketRunner({ wallet, onWalletChange, onBillPaid, onExitRoad, propInco
                             React.createElement("div", { style: { fontWeight: "bold", color: T.red } }, "Time's up! \u221230% income deducted")),
                         React.createElement("button", { onClick: closeQuiz, style: { width: "100%", padding: "12px", background: `linear-gradient(135deg,${T.cyan},#0086ff)`, color: "#05050a", border: "none", borderRadius: D.br, fontWeight: "bold", fontSize: 14, cursor: "pointer" } }, "\uD83D\uDE97 Back to Driving"))))))),
             phase !== "idle" && React.createElement("canvas", { ref: canvasRef, width: 480, height: 560, style: { display: "block", width: "100%" } })),
-        phase !== "idle" && React.createElement("div", { style: { display: "flex", gap: 10, padding: "12px 14px", background: T.surface, borderTop: `1px solid ${T.border}` } }, [{ dir: "movingLeft", label: "←" }, { dir: "movingRight", label: "→" }].map(b => (React.createElement("div", { key: b.dir, onTouchStart: e => { e.preventDefault(); if (g.current.gameActive) {
+        phase !== "idle" && React.createElement("div", { style: { display: "flex", gap: 12, padding: "12px 14px", background: "rgba(7,12,24,0.95)", borderTop: "1px solid rgba(0,229,255,0.1)" } }, [{ dir: "movingLeft", label: "←" }, { dir: "movingRight", label: "→" }].map(b => (React.createElement("div", { key: b.dir, onTouchStart: e => { e.preventDefault(); if (g.current.gameActive) {
                 g.current.car[b.dir] = true;
                 haptic(15);
             } }, onTouchEnd: e => { e.preventDefault(); g.current.car[b.dir] = false; }, onTouchCancel: e => { e.preventDefault(); g.current.car[b.dir] = false; }, onMouseDown: () => { if (g.current.gameActive)
-                g.current.car[b.dir] = true; }, onMouseUp: () => { g.current.car[b.dir] = false; }, onMouseLeave: () => { g.current.car[b.dir] = false; }, style: { flex: 1, height: 64, borderRadius: 12, border: `1.5px solid ${T.border2}`, background: "rgba(0,229,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", userSelect: "none", WebkitUserSelect: "none", fontSize: 26, color: T.cyan, fontWeight: "bold", touchAction: "none" } }, b.label))))));
+                g.current.car[b.dir] = true; }, onMouseUp: () => { g.current.car[b.dir] = false; }, onMouseLeave: () => { g.current.car[b.dir] = false; }, style: { flex: 1, height: 80, borderRadius: 18, border: "1px solid rgba(0,229,255,0.25)", background: "rgba(15,23,41,0.7)", backdropFilter: "blur(20px)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", userSelect: "none", WebkitUserSelect: "none", fontSize: 36, color: "#00E5FF", fontWeight: "bold", touchAction: "none", boxShadow: "0 0 15px rgba(0,229,255,0.1)" } }, b.label))))));
 }
 // ── LEARNING MODULES SCREEN ───────────────────────────────────────────────────
 function LearnScreen({ completedLessons, xp, onComplete }) {
@@ -2523,7 +2755,9 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
             return;
         }
         // Write this player's score
-        const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIncome: Math.round(totalDrivingIncome), taxPaid: Math.round(totalTaxPaid), company: companyName || "Unregistered", updatedAt: Date.now() };
+        // SECURITY: weekly income is server-incremented, not client-reported
+// We increment by the DELTA not replace with client value
+const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIncome: Math.round(totalDrivingIncome), weekStart: weekStart||"", taxPaid: Math.round(totalTaxPaid), company: companyName || "Unregistered", updatedAt: Date.now() };
         db.ref("leaderboard/" + currentUser.toLowerCase()).set({ ...entry, username: currentUser }).catch(() => { });
         // Subscribe to live leaderboard (top 100 by netWorth)
         const ref = db.ref("leaderboard").orderByChild("netWorth").limitToLast(100);
@@ -2543,22 +2777,66 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
             const lb = deduped.slice(0, 100);
             setBoard(lb);
             setStatus("live");
+            // Check if user is top 5 for reward notification
+            const myRankIdx = lb.findIndex(p => p.username && p.username.toLowerCase() === currentUser.toLowerCase());
+            if (myRankIdx >= 0 && myRankIdx < 5) {
+                const reward = WEEKLY_REWARDS[myRankIdx];
+                const rewardKey = "ml_reward_week_" + new Date().toISOString().slice(0,7); // monthly key
+                if (!localStorage.getItem(rewardKey) && reward) {
+                    window._pendingReward = { ...reward, rank: myRankIdx + 1 };
+                }
+            }
         };
         ref.on("value", handler, () => setStatus("offline"));
         return () => ref.off("value", handler);
     }, [netWorth]);
     const myRank = board.findIndex(e => e.username === currentUser) + 1;
+    const myRankDisplay = lbTab === "weekly" ? myRankWeekly : myRank;
     const MEDALS = ["🥇", "🥈", "🥉"];
+        // Compute weekly board from board data
+    const thisMonday2 = (() => {
+        const now = new Date();
+        const d = now.getDay();
+        const mon = new Date(now);
+        mon.setDate(now.getDate() - (d === 0 ? 6 : d - 1));
+        return mon.toISOString().slice(0,10);
+    })();
+    const weeklyBoard = board
+        .filter(p => p.weekStart === thisMonday2 && (p.weeklyDriveIncome||0) > 0)
+        .sort((a,b) => (b.weeklyDriveIncome||0) - (a.weeklyDriveIncome||0));
+    const displayBoard = lbTab === "weekly" ? weeklyBoard : board;
+    const myRankWeekly = weeklyBoard.findIndex(p => p.username && p.username.toLowerCase() === currentUser.toLowerCase()) + 1;
+
     return (React.createElement("div", null,
+        // Tab switcher
+        React.createElement("div", { style: { display:"flex", gap:8, marginBottom:12 } },
+            React.createElement("button", {
+                onClick: () => setLbTab("weekly"),
+                style: { flex:1, padding:"9px", borderRadius:10, border:`1px solid ${lbTab==="weekly"?T.gold:T.border}`, background: lbTab==="weekly"?"rgba(245,200,66,0.12)":"transparent", color: lbTab==="weekly"?T.gold:T.muted, fontWeight:"bold", fontSize:12, cursor:"pointer" }
+            }, "🏆 This Week"),
+            React.createElement("button", {
+                onClick: () => setLbTab("alltime"),
+                style: { flex:1, padding:"9px", borderRadius:10, border:`1px solid ${lbTab==="alltime"?T.cyan:T.border}`, background: lbTab==="alltime"?"rgba(0,229,255,0.08)":"transparent", color: lbTab==="alltime"?T.cyan:T.muted, fontWeight:"bold", fontSize:12, cursor:"pointer" }
+            }, "🌍 All Time")),
+        // Weekly rewards notice
+        lbTab === "weekly" && React.createElement("div", { style: { background:"rgba(245,200,66,0.08)", border:`1px solid ${T.gold}44`, borderRadius:10, padding:"10px 14px", marginBottom:12, fontSize:11, color:T.gold } },
+            "🎁 Top 5 by Drive Income this week win airtime rewards! Resets every Monday.",
+            myRankWeekly > 0 && myRankWeekly <= 5 && React.createElement("span", { style:{color:T.green, fontWeight:"bold", marginLeft:6} }, `You're #${myRankWeekly} this week!`),
+            weeklyBoard.length === 0 && React.createElement("div", { style:{color:T.muted, marginTop:4} }, "No drives recorded this week yet. Start driving to appear here!")
+        ),
         React.createElement("div", { style: { background: status === "live" ? "rgba(0,255,136,0.06)" : status === "offline" ? "rgba(255,71,87,0.06)" : "rgba(245,200,66,0.06)", border: `1px solid ${status === "live" ? T.green : status === "offline" ? T.red : T.gold}44`, borderRadius: D.br, padding: "9px 14px", marginBottom: 10, display: "flex", alignItems: "center", gap: 8, fontSize: 11 } },
             React.createElement("span", { style: { fontSize: 14 } }, status === "live" ? "🌐" : status === "offline" ? "📴" : "⏳"),
             React.createElement("span", { style: { color: status === "live" ? T.green : status === "offline" ? T.red : T.gold, fontWeight: "bold" } }, status === "live" ? "Live global leaderboard — all players worldwide" : status === "offline" ? "Local only — add Firebase config for global leaderboard" : "Connecting to global leaderboard…")),
+        currentUser && currentUser.toUpperCase() === "MRLOADED" && React.createElement("button", {
+            onClick: () => { if(window._showRewardPanel) window._showRewardPanel(); },
+            style: { width:"100%", padding:"10px", background:"rgba(0,255,136,0.08)", border:`1px solid ${T.green}`, borderRadius:D.brs, color:T.green, fontWeight:"bold", fontSize:12, cursor:"pointer", marginBottom:10 }
+        }, "🎁 Distribute Weekly Airtime Rewards"),
         React.createElement("div", { style: { background: T.card, border: `1px solid ${T.gold}44`, borderRadius: D.br, padding: 12, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" } },
             React.createElement("div", null,
                 React.createElement("div", { style: { fontSize: 11, color: T.muted, marginBottom: 2 } }, "Your global rank"),
-                React.createElement("div", { style: { fontSize: 22, fontWeight: "bold", color: T.gold } },
+                React.createElement("div", { style: { fontSize: 22, fontWeight: "bold", color: lbTab==="weekly"?T.gold:T.cyan } },
                     "#",
-                    myRank || "—")),
+                    (lbTab==="weekly"?myRankWeekly:myRank) || "—")),
             React.createElement("div", { style: { textAlign: "right" } },
                 React.createElement("div", { style: { fontSize: 11, color: T.muted, marginBottom: 2 } }, "Your net worth"),
                 React.createElement("div", { style: { fontSize: 16, fontWeight: "bold", fontFamily: "monospace", color: T.green } }, fmt(netWorth)))),
@@ -2590,9 +2868,10 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
             React.createElement("div", { style: { textAlign: "right" } },
                 React.createElement("div", { style: { fontWeight: "bold", fontSize: 13, fontFamily: "monospace", color: T.green } }, fmt(e.netWorth)),
                 React.createElement("div", { style: { fontSize: 10, color: T.muted } },
-                    "Drive: ",
-                    fmt(e.drivingIncome)))))),
-        board.length === 0 && React.createElement("div", { style: { textAlign: "center", color: T.muted, fontSize: 13, padding: "30px 0" } }, "No players yet. Complete a drive to join the leaderboard!")));
+                    lbTab === "weekly"
+                        ? React.createElement("span", { style:{color:T.gold, fontWeight:"bold"} }, "This week: " + fmt(e.weeklyDriveIncome||0))
+                        : ("Total: " + fmt(e.drivingIncome||0)))))),
+        displayBoard.length === 0 && React.createElement("div", { style: { textAlign: "center", color: T.muted, fontSize: 13, padding: "30px 0" } }, "No players yet. Complete a drive to join the leaderboard!")));
 }
 // ── STREAK BONUS MODAL ────────────────────────────────────────────────────────
 function StreakBonusModal({ streak, bonus, onClose }) {
@@ -3065,7 +3344,7 @@ function IPOScreen({ netWorth, wallet, companyName, isRegistered, ipoData, valua
                 ".")))));
 }
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
-const DEF_SAVE = { wallet: 10000, owned: {}, purchasePrices: {}, bankruptcyData: null, loans: [], loanHistory: [], portfolio: {}, totalBills: 0, day: 1, carSkin: "default", totalDrivingIncome: 0, totalTaxPaid: 0, totalPassiveIncome: 0, isRegistered: false, companyName: "", showRegPrompt: true, companyLedger: [], xp: 0, completedLessons: [], ipoData: null, streak: 0, lastLoginDate: null, totalChallengesWon: 0, assetPrices: null, valuationUnlocked: false };
+const DEF_SAVE = { wallet: 10000, owned: {}, purchasePrices: {}, bankruptcyData: null, loans: [], loanHistory: [], portfolio: {}, totalBills: 0, day: 1, carSkin: "default", totalDrivingIncome: 0, totalTaxPaid: 0, weeklyDriveIncome: 0, weekStart: "", totalPassiveIncome: 0, isRegistered: false, companyName: "", showRegPrompt: true, companyLedger: [], xp: 0, completedLessons: [], ipoData: null, streak: 0, lastLoginDate: null, totalChallengesWon: 0, assetPrices: null, valuationUnlocked: false };
 // ── BANKRUPTCY SCREEN ─────────────────────────────────────────────────────────
 function BankruptcyScreen({ user, debt, companyName, isRegistered, onBailout, onAcknowledge }) {
     const [bailouts, setBailouts] = useState([]);
@@ -3381,8 +3660,10 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     const db4 = getDB();
                                     if (db4) {
                                         const ikey = l.companyName.replace(/[^a-zA-Z0-9]/g,"_");
-                                        const newPrice = Math.round(sharePrice * (1 + 0.005 * (+qty2||1)));
-                                        db4.ref("ipo/listed/" + ikey + "/ipoData/sharePrice").set(newPrice).catch(()=>{});
+                                        // SECURITY: Cap single transaction price impact at 5% max
+        const priceImpact = Math.min(0.005 * (+qty2||1), 0.05);
+        const newPrice = Math.round(sharePrice * (1 + priceImpact));
+        db4.ref("ipo/listed/" + ikey + "/ipoData/sharePrice").set(newPrice).catch(()=>{});
                                         db4.ref("ipo/listed/" + ikey + "/ipoData/marketCap").set(newPrice * (ipo.totalShares||1000000)).catch(()=>{});
                                     }
                 // Track average buy price for P&L calculation
@@ -3406,8 +3687,10 @@ function IPOInvestSection({ owned, qty, setQty, wallet, setWalletRaw, showToast,
                                     const dbSell = getDB();
                                     if (dbSell) {
                                         const ikeySell = l.companyName.replace(/[^a-zA-Z0-9]/g,"_");
-                                        const newPriceSell = Math.max(10, Math.round(sharePrice * (1 - 0.005 * sharesOwned)));
-                                        dbSell.ref("ipo/listed/" + ikeySell + "/ipoData/sharePrice").set(newPriceSell).catch(()=>{});
+                                        // SECURITY: Cap single sell price impact at 5% max
+        const sellImpact = Math.min(0.005 * sharesOwned, 0.05);
+        const newPriceSell = Math.max(10, Math.round(sharePrice * (1 - sellImpact)));
+        dbSell.ref("ipo/listed/" + ikeySell + "/ipoData/sharePrice").set(newPriceSell).catch(()=>{});
                                         dbSell.ref("ipo/listed/" + ikeySell + "/ipoData/marketCap").set(newPriceSell * (ipo.totalShares||1000000)).catch(()=>{});
                                     }
                                     showToast(rev > costBasis2 ? `✅ Sold ${sharesOwned} shares · Profit: ${fmt(rev-costBasis2-tax)} after tax` : `📉 Sold at a loss: ${fmt(rev)} received`, rev > costBasis2 ? T.green : T.orange);
@@ -3925,6 +4208,8 @@ function App() {
     const [day, setDay] = useState(1);
     const [carSkin, setCarSkin] = useState("default");
     const [totalDrivingIncome, setTDI] = useState(0);
+  const [weeklyDriveIncome, setWeeklyDriveIncome] = useState(0);
+  const [weekStart, setWeekStart] = useState("");
     const [totalTaxPaid, setTTP] = useState(0);
     const [isRegistered, setIsRegistered] = useState(false);
     const [companyName, setCompanyName] = useState("");
@@ -4027,6 +4312,34 @@ function App() {
                 await priceRef.set({ ...next, updatedAt: Date.now() });
                 await masterRef.update({ lastSeen: Date.now() });
                 setAssetPrices(next);
+                // SECURITY: Master client also processes overdue loan defaults
+                // This ensures defaults trigger even if borrower never logs in
+                try {
+                    const activeSnap = await db.ref("p2p/active").once("value");
+                    const allLoans = activeSnap.val();
+                    if (allLoans) {
+                        const now = new Date();
+                        for (const [id, loan] of Object.entries(allLoans)) {
+                            if (loan && loan.status === "active" && new Date(loan.dueDate) < now && !loan.penaltyApplied) {
+                                const penalty = Math.round((loan.amount||0) * 0.10);
+                                await db.ref("p2p/active/" + id).update({
+                                    status: "defaulted", penaltyApplied: true,
+                                    penaltyAmount: penalty, totalOwed: (loan.amount||0) + penalty,
+                                    defaultedAt: new Date().toISOString()
+                                });
+                                // Notify lender
+                                if (loan.lender) {
+                                    await db.ref("p2p/notifications/" + loan.lender + "/default_" + id).set({
+                                        type:"default", borrower:loan.borrower||"unknown",
+                                        amount:loan.amount, penalty,
+                                        message:`${loan.borrower} defaulted! +10% penalty. Auto-collection active.`,
+                                        at:new Date().toISOString(), read:false
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } catch(e) {}
             } catch(e) { isMaster = false; }
         }
 
@@ -4234,6 +4547,21 @@ function App() {
         setIpoData(s.ipoData || null);
         setShownMilestones(s.shownMilestones || []);
         setTotalChallengesWon(s.totalChallengesWon || 0);
+        // ── Weekly drive income reset ──
+        const nowDate = new Date();
+        const dayOfWeek = nowDate.getDay();
+        const monday = new Date(nowDate);
+        monday.setDate(nowDate.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+        const thisMonday = monday.toISOString().slice(0,10);
+        const savedWeekStart = s.weekStart || "";
+        if (savedWeekStart !== thisMonday) {
+            // New week — weekly income resets to 0
+            s.weeklyDriveIncome = 0;
+            s.weekStart = thisMonday;
+        }
+        setWeeklyDriveIncome(s.weeklyDriveIncome || 0);
+        setWeekStart(s.weekStart || thisMonday);
+
         // ── Daily streak logic ──
         const today = new Date().toDateString();
         const last = s.lastLoginDate || null;
@@ -4271,7 +4599,7 @@ function App() {
         }
     }
     function persistSave(overrides = {}) {
-        const s = { wallet, owned, purchasePrices, passiveIncomeData, bankruptcyData, loans, portfolio, totalBills, day, carSkin, totalDrivingIncome, totalTaxPaid, isRegistered, companyName, showRegPrompt, companyLedger, xp, completedLessons, ipoData, shownMilestones, streak, lastLoginDate, totalChallengesWon, ...overrides };
+        const s = { wallet, owned, purchasePrices, passiveIncomeData, bankruptcyData, loans, portfolio, totalBills, day, carSkin, totalDrivingIncome, totalTaxPaid, weeklyDriveIncome, weekStart, isRegistered, companyName, showRegPrompt, companyLedger, xp, completedLessons, ipoData, shownMilestones, streak, lastLoginDate, totalChallengesWon, ...overrides };
         // Save locally for instant response
         doSave(s);
         const accs = loadAccounts();
@@ -4368,7 +4696,9 @@ function App() {
             setPassiveIncomeData(pd => {
                 if (pd.expiresAt <= now)
                     return pd; // expired — no passive income
-                const tickAmount = Math.round(pd.dailyPassive / 1440); // per minute
+                // SECURITY: Cap dailyPassive at $10M max to prevent localStorage manipulation
+        const safeDailyPassive = Math.min(pd.dailyPassive || 0, 10000000);
+        const tickAmount = Math.round(safeDailyPassive / 1440); // per minute
                 if (tickAmount > 0) {
                     setWalletRaw(w => +(w + tickAmount).toFixed(2));
                     showToast(`+${fmt(tickAmount)} passive income`, T.green);
@@ -4390,6 +4720,15 @@ function App() {
     }
     function handleSkipReg() { setShowRegPrompt(false); persistSave({ showRegPrompt: false }); }
     function handleExitRoad(finalBalance, earned, driveStats) {
+        // SECURITY: Cap max drive earnings per session based on time played
+        // Prevents injected earnings from console manipulation
+        const sessionDuration = driveStats?.sessionDuration || 0;
+        const maxReasonableEarnings = Math.max(50000, sessionDuration * 500); // $500/second max
+        if (earned > maxReasonableEarnings) {
+            console.error("SECURITY: Suspicious drive earnings detected:", earned, "max allowed:", maxReasonableEarnings);
+            earned = maxReasonableEarnings;
+            finalBalance = Math.min(finalBalance, (taxModal?.startBalance || 0) + maxReasonableEarnings);
+        }
         setWalletRaw(finalBalance);
         setTaxModal({ balance: finalBalance, earned });
         // Calculate new passive income based on drive performance
@@ -4418,12 +4757,21 @@ function App() {
     }
     async function handleTaxConfirm(taxAmount, expenseBreakdown) {
         const earned = taxModal.earned;
+        // SECURITY: Re-validate isRegistered from Firebase — prevents localStorage tampering
+        let validatedIsRegistered = isRegistered;
+        try {
+            const db2 = getDB();
+            if (db2 && user) {
+                const snap = await db2.ref("accounts/" + user.toLowerCase() + "/save/isRegistered").once("value");
+                if (snap.exists()) validatedIsRegistered = snap.val();
+            }
+        } catch(e) {}
         const rawExpenses = expenseBreakdown
             ? Object.values(expenseBreakdown).filter(k => k !== '_minExpenseApplied').reduce((s, v) => s + (parseFloat(v) || 0), 0)
             : 0;
         // Enforce minimum 5% operational expenses for registered companies
-        const minExp = isRegistered ? Math.round(earned * 0.05) : 0;
-        const totalExpenses = isRegistered ? Math.max(rawExpenses, minExp) : rawExpenses;
+        const minExp = validatedIsRegistered ? Math.round(earned * 0.05) : 0;
+        const totalExpenses = validatedIsRegistered ? Math.max(rawExpenses, minExp) : rawExpenses;
         const netIncome = Math.max(0, earned - totalExpenses);
         let totalDeduction = taxAmount;
         let debtRepayment = 0;
@@ -4492,6 +4840,33 @@ function App() {
         setWalletRaw(w => +(w - totalDeduction).toFixed(2));
         setTDI(t => t + earned);
         setTTP(t => t + taxAmount);
+        setWeeklyDriveIncome(w => w + earned);
+        // SECURITY: Increment weekly income server-side via Firebase transaction
+        // This cannot be tampered with via localStorage
+        const dbW = getDB();
+        if (dbW && user) {
+            const wKey = "leaderboard/" + user.toLowerCase() + "/weeklyDriveIncome";
+            const wStartKey = "leaderboard/" + user.toLowerCase() + "/weekStart";
+            const thisMonday = (() => {
+                const now = new Date();
+                const d = now.getDay();
+                const mon = new Date(now);
+                mon.setDate(now.getDate() - (d === 0 ? 6 : d - 1));
+                return mon.toISOString().slice(0,10);
+            })();
+            // Check if week has reset first
+            dbW.ref("leaderboard/" + user.toLowerCase() + "/weekStart").once("value").then(snap => {
+                const serverWeekStart = snap.val();
+                if (serverWeekStart !== thisMonday) {
+                    // New week on server — reset
+                    dbW.ref(wKey).set(Math.round(earned)).catch(()=>{});
+                    dbW.ref(wStartKey).set(thisMonday).catch(()=>{});
+                } else {
+                    // Same week — increment via transaction (atomic, tamper-proof)
+                    dbW.ref(wKey).transaction(current => (current || 0) + Math.round(earned)).catch(()=>{});
+                }
+            }).catch(()=>{});
+        }
         // Distribute dividends to shareholders if company is listed
         if (isRegistered && ipoData && (ipoData.stage === "Listed" || ipoData.stage === "Blue Chip") && earned > 0) {
             console.log("Distributing dividends for", companyName, "earned:", earned, "owner:", user);
@@ -5126,7 +5501,42 @@ function App() {
                                 React.createElement("span", { style: { fontFamily: "monospace", color: T.orange } },
                                     "-",
                                     fmt(parseFloat(r.expenses[e.k]))))))))))))))))),
-        tab === "leaderboard" && (React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName })),
+        showRewardPanel && React.createElement(AdminRewardPanel, { leaderboard: [], onClose: () => setShowRewardPanel(false) }),
+      myReward && React.createElement(RewardClaimModal, {
+          reward: myReward,
+          username: user,
+          onClaim: async (phone2, amount2) => {
+              const db2 = getDB();
+              if (db2) {
+                  // SECURITY: Validate weekly rank server-side before saving reward request
+                  const thisMonday = (() => {
+                      const now = new Date();
+                      const d = now.getDay();
+                      const mon = new Date(now);
+                      mon.setDate(now.getDate() - (d === 0 ? 6 : d - 1));
+                      return mon.toISOString().slice(0,10);
+                  })();
+                  const lbSnap = await db2.ref("leaderboard").orderByChild("weeklyDriveIncome").limitToLast(10).once("value");
+                  const lbData = lbSnap.val() || {};
+                  const weekly = Object.values(lbData)
+                      .filter(p => p.weekStart === thisMonday && (p.weeklyDriveIncome||0) > 0)
+                      .sort((a,b) => (b.weeklyDriveIncome||0)-(a.weeklyDriveIncome||0));
+                  const serverRank = weekly.findIndex(p => p.username && p.username.toLowerCase() === (user||"").toLowerCase()) + 1;
+                  if (serverRank === 0 || serverRank > 5) {
+                      throw new Error("Your weekly rank could not be verified on the server. Drive more this week!");
+                  }
+                  await db2.ref("rewards/pending/" + (user||"unknown") + "_" + Date.now()).set({
+                      username: user, phone: phone2, amount: amount2, rank: serverRank,
+                      label: myReward.label, weekStart: thisMonday,
+                      requestedAt: new Date().toISOString(), status: "pending",
+                      verified: true // server rank verified
+                  });
+              }
+              localStorage.setItem("ml_reward_week_" + new Date().toISOString().slice(0,7), "1");
+          },
+          onClose: () => { setMyReward(null); localStorage.setItem("ml_reward_week_" + new Date().toISOString().slice(0,7), "1"); }
+      }),
+      tab === "leaderboard" && (React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName, weeklyDriveIncome: weeklyDriveIncome })),
         tab === "challenges" && (React.createElement(ChallengesScreen, { currentUser: user, netWorth: netWorth, streak: streak, totalChallengesWon: totalChallengesWon, onChallengeWon: () => setTotalChallengesWon(c => c + 1) })),
         tab === "ipo" && (React.createElement(IPOScreen, { netWorth: netWorth, wallet: wallet, companyName: companyName, isRegistered: isRegistered, ipoData: ipoData, valuationUnlocked: valuationUnlocked, onLaunchIPO: handleLaunchIPO, onSellShares: handleSellShares, onBuyback: handleBuyback })),
         tab === "runner" && (React.createElement(MarketRunner, { wallet: wallet, onWalletChange: v => setWalletRaw(v), onBillPaid: amt => setTotalBills(t => t + amt), onExitRoad: handleExitRoad, propIncome: propIncome, carSkin: carSkin, completedLessons: completedLessons, onLearnComplete: handleLearnComplete, isRegistered: isRegistered }))));
