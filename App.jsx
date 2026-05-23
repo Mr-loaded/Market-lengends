@@ -1351,7 +1351,7 @@ function Row({ label, val, color, bold }) {
         React.createElement("span", { style: { fontFamily: "monospace", color: color || T.text } }, val)));
 }
 // ── SHARE CARD ────────────────────────────────────────────────────────────────
-function ShareCard({ username, netWorth, totalDrivingIncome, totalTaxPaid, portfolio, owned, companyName, onClose }) {
+function ShareCard({ username, netWorth, totalDrivingIncome, totalTaxPaid, weeklyDriveIncome, weekStart, portfolio, owned, companyName, onClose }) {
     const [copied, setCopied] = useState(false);
     const stocksOwned = ALL_STOCKS.filter(s => (portfolio[s.ticker] || 0) > 0);
     const propsOwned = PROPERTIES.filter(p => owned[p.id]);
@@ -2736,6 +2736,7 @@ function fbConfigured() {
 function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTaxPaid, companyName }) {
     const [board, setBoard] = useState([]);
     const [status, setStatus] = useState("loading"); // loading | live | offline
+    const [lbTab, setLbTab] = useState("weekly");
     // Write current player score + subscribe to live updates
     useEffect(() => {
         // Simple direct Firebase connection — same pattern as P2P lending
@@ -2762,28 +2763,56 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
                     .slice(0, 100);
                 setBoard(sorted);
                 window._globalLeaderboard = sorted;
+                // Check weekly reward eligibility
+                const thisMonday = (() => { const n=new Date(),d=n.getDay(),m=new Date(n); m.setDate(n.getDate()-(d===0?6:d-1)); return m.toISOString().slice(0,10); })();
+                const weeklySorted = sorted.filter(p => p.weekStart===thisMonday && (p.weeklyDriveIncome||0)>0).sort((a,b)=>(b.weeklyDriveIncome||0)-(a.weeklyDriveIncome||0));
+                window._weeklyLeaderboard = weeklySorted;
+                const myWRank = weeklySorted.findIndex(p => p.username && p.username.toLowerCase() === currentUser.toLowerCase());
+                if (myWRank >= 0 && myWRank < 5) {
+                    const rKey = "ml_reward_week_" + thisMonday;
+                    if (!localStorage.getItem(rKey) && WEEKLY_REWARDS[myWRank]) {
+                        window._pendingReward = { ...WEEKLY_REWARDS[myWRank], rank: myWRank + 1 };
+                    }
+                }
             }, err => {
                 console.error("Leaderboard error:", err);
                 setStatus("offline");
             });
             // Write current player score
             if (currentUser) {
-                db.ref("leaderboard/" + currentUser.toLowerCase()).update({
-                    username: currentUser,
-                    netWorth: Math.round(netWorth),
-                    drivingIncome: Math.round(totalDrivingIncome),
-                    taxPaid: Math.round(totalTaxPaid),
-                    company: companyName || "Unregistered",
-                    updatedAt: Date.now()
-                }).catch(() => {});
+                // Get weeklyDriveIncome from Firebase (server-side value)
+                db.ref("leaderboard/" + currentUser.toLowerCase() + "/weeklyDriveIncome").once("value").then(snap => {
+                    const serverWeekly = snap.val() || 0;
+                    db.ref("leaderboard/" + currentUser.toLowerCase()).update({
+                        username: currentUser,
+                        netWorth: Math.round(netWorth),
+                        drivingIncome: Math.round(totalDrivingIncome),
+                        taxPaid: Math.round(totalTaxPaid),
+                        company: companyName || "Unregistered",
+                        weeklyDriveIncome: serverWeekly,
+                        updatedAt: Date.now()
+                    }).catch(() => {});
+                }).catch(() => {
+                    db.ref("leaderboard/" + currentUser.toLowerCase()).update({
+                        username: currentUser,
+                        netWorth: Math.round(netWorth),
+                        drivingIncome: Math.round(totalDrivingIncome),
+                        taxPaid: Math.round(totalTaxPaid),
+                        company: companyName || "Unregistered",
+                        updatedAt: Date.now()
+                    }).catch(() => {});
+                });
+                // Also push phone if available
+                db.ref("accounts/" + currentUser.toLowerCase() + "/phone").once("value").then(snap => {
+                    const ph = snap.val();
+                    if (ph) db.ref("leaderboard/" + currentUser.toLowerCase() + "/phone").set(ph).catch(()=>{});
+                }).catch(()=>{});
             }
         }
         connect();
     }, [netWorth, currentUser]);
-    const myRank = board.findIndex(e => e.username === currentUser) + 1;
-    const myRankDisplay = lbTab === "weekly" ? myRankWeekly : myRank;
     const MEDALS = ["🥇", "🥈", "🥉"];
-        // Compute weekly board from board data
+    // Compute weekly board from board data
     const thisMonday2 = (() => {
         const now = new Date();
         const d = now.getDay();
@@ -2795,6 +2824,7 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
         .filter(p => p.weekStart === thisMonday2 && (p.weeklyDriveIncome||0) > 0)
         .sort((a,b) => (b.weeklyDriveIncome||0) - (a.weeklyDriveIncome||0));
     const displayBoard = lbTab === "weekly" ? weeklyBoard : board;
+    const myRank = board.findIndex(e => e.username && e.username.toLowerCase() === currentUser.toLowerCase()) + 1;
     const myRankWeekly = weeklyBoard.findIndex(p => p.username && p.username.toLowerCase() === currentUser.toLowerCase()) + 1;
 
     return (React.createElement("div", null,
@@ -4199,6 +4229,8 @@ function App() {
     const [carSkin, setCarSkin] = useState("default");
     const [totalDrivingIncome, setTDI] = useState(0);
   const [weeklyDriveIncome, setWeeklyDriveIncome] = useState(0);
+  const [weekStart, setWeekStart] = useState('');
+  const [weeklyDriveIncome, setWeeklyDriveIncome] = useState(0);
   const [weekStart, setWeekStart] = useState("");
     const [totalTaxPaid, setTTP] = useState(0);
     const [isRegistered, setIsRegistered] = useState(false);
@@ -4233,6 +4265,8 @@ function App() {
     const [showShare, setShowShare] = useState(false);
     const [showValuation, setShowValuation] = useState(false);
     const [showCoach, setShowCoach] = useState(false);
+    const [showRewardPanel, setShowRewardPanel] = useState(false);
+    const [myReward, setMyReward] = useState(null);
     const [assetPrices, setAssetPrices] = useState(() => initAssetPrices());
     const [showIPOProfile, setShowIPOProfile] = useState(null);
     const [openLoanCount, setOpenLoanCount] = useState(0); // {companyName,ipoData,ownerSave}
@@ -4254,6 +4288,19 @@ function App() {
     const netWorth = wallet + stockValue + propValue;
     const loansOut = loans.reduce((s, l) => s + l.amount, 0);
     const valuationUnlocked = totalDrivingIncome >= VALUATION_UNLOCK;
+    // Expose reward panel for admin
+    useEffect(() => { window._showRewardPanel = () => setShowRewardPanel(true); }, []);
+    // Check pending reward
+    useEffect(() => {
+        const interval = setInterval(() => {
+            if (window._pendingReward && !myReward) {
+                setMyReward(window._pendingReward);
+                window._pendingReward = null;
+            }
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [myReward]);
+
     // ── SYNCED ASSET PRICES VIA FIREBASE (15 second intervals) ──────────────────
     // One player acts as market maker and pushes prices to Firebase
     // All other players read from Firebase — everyone sees the same prices
@@ -4831,6 +4878,23 @@ function App() {
         setTDI(t => t + earned);
         setTTP(t => t + taxAmount);
         setWeeklyDriveIncome(w => w + earned);
+        // Server-side atomic increment — tamper proof
+        try {
+            const dbW = window._firebaseDB || (typeof firebase !== "undefined" ? firebase.database() : null);
+            if (dbW && user) {
+                const ukey = user.toLowerCase();
+                const thisMonday = (() => { const n=new Date(),d=n.getDay(),m=new Date(n); m.setDate(n.getDate()-(d===0?6:d-1)); return m.toISOString().slice(0,10); })();
+                dbW.ref("leaderboard/"+ukey+"/weekStart").once("value").then(snap => {
+                    const sw = snap.val();
+                    if (sw !== thisMonday) {
+                        dbW.ref("leaderboard/"+ukey+"/weeklyDriveIncome").set(Math.round(earned)).catch(()=>{});
+                        dbW.ref("leaderboard/"+ukey+"/weekStart").set(thisMonday).catch(()=>{});
+                    } else {
+                        dbW.ref("leaderboard/"+ukey+"/weeklyDriveIncome").transaction(cur => (cur||0) + Math.round(earned)).catch(()=>{});
+                    }
+                }).catch(()=>{});
+            }
+        } catch(e) {}
         // SECURITY: Increment weekly income server-side via Firebase transaction
         // This cannot be tampered with via localStorage
         const dbW = getDB();
@@ -5491,7 +5555,7 @@ function App() {
                                 React.createElement("span", { style: { fontFamily: "monospace", color: T.orange } },
                                     "-",
                                     fmt(parseFloat(r.expenses[e.k]))))))))))))))))),
-        showRewardPanel && React.createElement(AdminRewardPanel, { leaderboard: window._globalLeaderboard || [], weeklyBoard: (window._globalLeaderboard||[]).filter(p=>p.weeklyDriveIncome>0).sort((a,b)=>b.weeklyDriveIncome-a.weeklyDriveIncome), onClose: () => setShowRewardPanel(false) }),
+        showRewardPanel && React.createElement(AdminRewardPanel, { leaderboard: window._globalLeaderboard || [], weeklyBoard: window._weeklyLeaderboard || [], onClose: () => setShowRewardPanel(false) }),
       myReward && React.createElement(RewardClaimModal, {
           reward: myReward,
           username: user,
