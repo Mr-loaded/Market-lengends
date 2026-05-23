@@ -2642,27 +2642,42 @@ let _db = null;
 function getDB() {
     if (_db) return _db;
     try {
-        // Use pre-initialized Firebase from main.jsx (window._firebaseDB)
+        // Try window._firebaseDB first (set by main.jsx)
         if (window._firebaseDB) {
             _db = window._firebaseDB;
-            console.log("Market Legends: Using pre-initialized Firebase DB");
             return _db;
         }
-        // Fallback: initialize directly
-        if (typeof firebase === "undefined") {
-            console.warn("Firebase not available");
-            return null;
+        // Try global firebase object
+        if (typeof firebase !== "undefined") {
+            if (!firebase.apps || firebase.apps.length === 0) {
+                firebase.initializeApp(FIREBASE_CONFIG);
+            }
+            _db = firebase.database();
+            return _db;
         }
-        if (!firebase.apps || firebase.apps.length === 0) {
-            firebase.initializeApp(FIREBASE_CONFIG);
-        }
-        _db = firebase.database();
-        console.log("Market Legends: Firebase DB ready");
+        // Try importing firebase compat from npm bundle
+        // The firebase.js module should have initialized it
+        console.warn("Firebase not available yet — will retry");
     }
     catch (e) {
         console.error("Firebase init failed:", e.message);
     }
     return _db;
+}
+
+// Retry getDB every 500ms until Firebase is ready
+function getDBAsync() {
+    return new Promise((resolve) => {
+        const db = getDB();
+        if (db) { resolve(db); return; }
+        let attempts = 0;
+        const interval = setInterval(() => {
+            attempts++;
+            const db2 = getDB();
+            if (db2) { clearInterval(interval); resolve(db2); return; }
+            if (attempts > 20) { clearInterval(interval); resolve(null); } // give up after 10s
+        }, 500);
+    });
 }
 // Eagerly initialize Firebase on page load
 (function () {
@@ -2715,7 +2730,8 @@ function getDB() {
     catch (e) { }
 })();
 function fbConfigured() {
-    return FIREBASE_CONFIG.apiKey !== "PASTE_YOUR_apiKey_HERE";
+    // Config is always hardcoded — always return true
+    return !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
 }
 function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTaxPaid, companyName }) {
     const [board, setBoard] = useState([]);
@@ -2749,10 +2765,20 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
             setBoard(lb);
             return;
         }
-        const db = getDB();
+        // Use async retry — Firebase may not be ready immediately on mount
+        let db = getDB();
         if (!db) {
-            setStatus("offline");
-            return;
+            // Retry after 3 seconds — give Firebase time to initialize
+            const retryTimer = setTimeout(async () => {
+                db = await getDBAsync();
+                if (db) {
+                    window.dispatchEvent(new Event("ml_firebase_ready"));
+                } else {
+                    setStatus("offline");
+                }
+            }, 3000);
+            setStatus("loading");
+            return () => clearTimeout(retryTimer);
         }
         // Write this player's score
         // SECURITY: weekly income is server-incremented, not client-reported
@@ -2777,6 +2803,8 @@ const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIn
             const lb = deduped.slice(0, 100);
             setBoard(lb);
             setStatus("live");
+            // Expose to parent App for admin panel
+            window._globalLeaderboard = lb;
             // Check if user is top 5 for reward notification
             const myRankIdx = lb.findIndex(p => p.username && p.username.toLowerCase() === currentUser.toLowerCase());
             if (myRankIdx >= 0 && myRankIdx < 5) {
@@ -2788,8 +2816,14 @@ const entry = { username: currentUser, netWorth: Math.round(netWorth), drivingIn
             }
         };
         ref.on("value", handler, () => setStatus("offline"));
-        return () => ref.off("value", handler);
-    }, [netWorth]);
+        // Also listen for firebase ready event to reconnect
+        const onFirebaseReady = () => setStatus("loading");
+        window.addEventListener("ml_firebase_ready", onFirebaseReady);
+        return () => {
+            ref.off("value", handler);
+            window.removeEventListener("ml_firebase_ready", onFirebaseReady);
+        };
+    }, [netWorth, currentUser]);
     const myRank = board.findIndex(e => e.username === currentUser) + 1;
     const myRankDisplay = lbTab === "weekly" ? myRankWeekly : myRank;
     const MEDALS = ["🥇", "🥈", "🥉"];
@@ -5501,7 +5535,7 @@ function App() {
                                 React.createElement("span", { style: { fontFamily: "monospace", color: T.orange } },
                                     "-",
                                     fmt(parseFloat(r.expenses[e.k]))))))))))))))))),
-        showRewardPanel && React.createElement(AdminRewardPanel, { leaderboard: [], onClose: () => setShowRewardPanel(false) }),
+        showRewardPanel && React.createElement(AdminRewardPanel, { leaderboard: window._globalLeaderboard || [], weeklyBoard: (window._globalLeaderboard||[]).filter(p=>p.weeklyDriveIncome>0).sort((a,b)=>b.weeklyDriveIncome-a.weeklyDriveIncome), onClose: () => setShowRewardPanel(false) }),
       myReward && React.createElement(RewardClaimModal, {
           reward: myReward,
           username: user,
@@ -5536,7 +5570,16 @@ function App() {
           },
           onClose: () => { setMyReward(null); localStorage.setItem("ml_reward_week_" + new Date().toISOString().slice(0,7), "1"); }
       }),
-      tab === "leaderboard" && (React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName, weeklyDriveIncome: weeklyDriveIncome })),
+      tab === "leaderboard" && (React.createElement("div", null,
+        // Admin reward button — only visible to MRLOADED
+        user && user.toUpperCase() === "MRLOADED" && React.createElement("div", { style: { padding: "0 14px 10px" } },
+            React.createElement("button", {
+                onClick: () => setShowRewardPanel(true),
+                style: { width: "100%", padding: "12px", background: "rgba(0,255,136,0.1)", border: "1px solid #00FF88", borderRadius: 12, color: "#00FF88", fontWeight: "bold", fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }
+            }, "🎁 Distribute Weekly Airtime Rewards")
+        ),
+        React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName, weeklyDriveIncome: weeklyDriveIncome })
+    )),
         tab === "challenges" && (React.createElement(ChallengesScreen, { currentUser: user, netWorth: netWorth, streak: streak, totalChallengesWon: totalChallengesWon, onChallengeWon: () => setTotalChallengesWon(c => c + 1) })),
         tab === "ipo" && (React.createElement(IPOScreen, { netWorth: netWorth, wallet: wallet, companyName: companyName, isRegistered: isRegistered, ipoData: ipoData, valuationUnlocked: valuationUnlocked, onLaunchIPO: handleLaunchIPO, onSellShares: handleSellShares, onBuyback: handleBuyback })),
         tab === "runner" && (React.createElement(MarketRunner, { wallet: wallet, onWalletChange: v => setWalletRaw(v), onBillPaid: amt => setTotalBills(t => t + amt), onExitRoad: handleExitRoad, propIncome: propIncome, carSkin: carSkin, completedLessons: completedLessons, onLearnComplete: handleLearnComplete, isRegistered: isRegistered }))));
