@@ -2733,7 +2733,7 @@ function fbConfigured() {
     // Config is always hardcoded — always return true
     return !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL);
 }
-function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTaxPaid, companyName }) {
+function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTaxPaid, companyName, setShowRewardPanel }) {
     const [board, setBoard] = useState([]);
     const [status, setStatus] = useState("loading"); // loading | live | offline
     const [lbTab, setLbTab] = useState("weekly");
@@ -2847,8 +2847,8 @@ function GlobalLeaderboard({ currentUser, netWorth, totalDrivingIncome, totalTax
         React.createElement("div", { style: { background: status === "live" ? "rgba(0,255,136,0.06)" : status === "offline" ? "rgba(255,71,87,0.06)" : "rgba(245,200,66,0.06)", border: `1px solid ${status === "live" ? T.green : status === "offline" ? T.red : T.gold}44`, borderRadius: D.br, padding: "9px 14px", marginBottom: 10, display: "flex", alignItems: "center", gap: 8, fontSize: 11 } },
             React.createElement("span", { style: { fontSize: 14 } }, status === "live" ? "🌐" : status === "offline" ? "📴" : "⏳"),
             React.createElement("span", { style: { color: status === "live" ? T.green : status === "offline" ? T.red : T.gold, fontWeight: "bold" } }, status === "live" ? "Live global leaderboard — all players worldwide" : status === "offline" ? "Local only — add Firebase config for global leaderboard" : "Connecting to global leaderboard…")),
-        currentUser && currentUser.toUpperCase() === "MRLOADED" && React.createElement("button", {
-            onClick: () => { if(window._showRewardPanel) window._showRewardPanel(); },
+        currentUser && (currentUser.toUpperCase().replace(/[^A-Z]/g,"") === "MRLOADED") && React.createElement("button", {
+            onClick: () => { setShowRewardPanel && setShowRewardPanel(true); if(window._showRewardPanel) window._showRewardPanel(); },
             style: { width:"100%", padding:"10px", background:"rgba(0,255,136,0.08)", border:`1px solid ${T.green}`, borderRadius:D.brs, color:T.green, fontWeight:"bold", fontSize:12, cursor:"pointer", marginBottom:10 }
         }, "🎁 Distribute Weekly Airtime Rewards"),
         React.createElement("div", { style: { background: T.card, border: `1px solid ${T.gold}44`, borderRadius: D.br, padding: 12, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" } },
@@ -3160,9 +3160,12 @@ function ShareholdersDashboard({ companyName, ipoData }) {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (!companyName) return;
+        // Use ipoData.companyName if available — it's the actual listed company name
+        const actualName = (ipoData && ipoData.companyName) || companyName;
+        if (!actualName) return;
         const db = getDB(); if (!db) { setLoading(false); return; }
-        const key = companyName.replace(/[^a-zA-Z0-9]/g, "_");
+        const key = actualName.replace(/[^a-zA-Z0-9]/g, "_");
+        console.log("ShareholdersDashboard reading from:", "ipo/shareholders/" + key);
         const ref = db.ref("ipo/shareholders/" + key);
         ref.on("value", snap => {
             const v = snap.val();
@@ -5592,13 +5595,13 @@ function App() {
       }),
       tab === "leaderboard" && (React.createElement("div", null,
         // Admin reward button — only visible to MRLOADED
-        user && user.toUpperCase() === "MRLOADED" && React.createElement("div", { style: { padding: "0 14px 10px" } },
+        user && (user.toUpperCase().replace(/[^A-Z]/g,"") === "MRLOADED") && React.createElement("div", { style: { padding: "0 14px 10px" } },
             React.createElement("button", {
                 onClick: () => setShowRewardPanel(true),
                 style: { width: "100%", padding: "12px", background: "rgba(0,255,136,0.1)", border: "1px solid #00FF88", borderRadius: 12, color: "#00FF88", fontWeight: "bold", fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }
             }, "🎁 Distribute Weekly Airtime Rewards")
         ),
-        React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName, weeklyDriveIncome: weeklyDriveIncome })
+        React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName, weeklyDriveIncome: weeklyDriveIncome, setShowRewardPanel: setShowRewardPanel })
     )),
         tab === "challenges" && (React.createElement(ChallengesScreen, { currentUser: user, netWorth: netWorth, streak: streak, totalChallengesWon: totalChallengesWon, onChallengeWon: () => setTotalChallengesWon(c => c + 1) })),
         tab === "ipo" && (React.createElement(IPOScreen, { netWorth: netWorth, wallet: wallet, companyName: companyName, isRegistered: isRegistered, ipoData: ipoData, valuationUnlocked: valuationUnlocked, onLaunchIPO: handleLaunchIPO, onSellShares: handleSellShares, onBuyback: handleBuyback })),
