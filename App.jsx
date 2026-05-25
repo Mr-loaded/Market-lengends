@@ -5595,11 +5595,15 @@ function App() {
       }),
       tab === "leaderboard" && (React.createElement("div", null,
         // Admin reward button — only visible to MRLOADED
-        user && (user.toUpperCase().replace(/[^A-Z]/g,"") === "MRLOADED") && React.createElement("div", { style: { padding: "0 14px 10px" } },
+        React.createElement("div", { style: { padding: "0 0 10px" } },
             React.createElement("button", {
-                onClick: () => setShowRewardPanel(true),
-                style: { width: "100%", padding: "12px", background: "rgba(0,255,136,0.1)", border: "1px solid #00FF88", borderRadius: 12, color: "#00FF88", fontWeight: "bold", fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }
-            }, "🎁 Distribute Weekly Airtime Rewards")
+                onClick: () => {
+                    const pin = prompt("Admin PIN:");
+                    if (pin === "ML2024ADMIN") setShowRewardPanel(true);
+                    else if (pin !== null) alert("Wrong PIN");
+                },
+                style: { width: "100%", padding: "12px", background: "rgba(0,255,136,0.1)", border: "1px solid #00FF88", borderRadius: 12, color: "#00FF88", fontWeight: "bold", fontSize: 13, cursor: "pointer" }
+            }, "🎁 Admin: Distribute Weekly Airtime Rewards")
         ),
         React.createElement(GlobalLeaderboard, { currentUser: user, netWorth: netWorth, totalDrivingIncome: totalDrivingIncome, totalTaxPaid: totalTaxPaid, companyName: companyName, weeklyDriveIncome: weeklyDriveIncome, setShowRewardPanel: setShowRewardPanel })
     )),
