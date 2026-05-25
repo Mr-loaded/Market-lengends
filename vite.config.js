@@ -8,5 +8,13 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
     minify: true,
+    rollupOptions: {
+      output: {
+        // Add timestamp to force cache invalidation
+        entryFileNames: `assets/[name]-[hash].js`,
+        chunkFileNames: `assets/[name]-[hash].js`,
+        assetFileNames: `assets/[name]-[hash].[ext]`
+      }
+    }
   }
 })
